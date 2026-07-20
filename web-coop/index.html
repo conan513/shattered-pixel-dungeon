@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shattered Pixel Dungeon Co-op</title>
+    <meta name="description" content="Shattered Pixel Dungeon – Online cooperative multiplayer web edition.">
+    <link rel="stylesheet" href="style.css">
+    <!-- PeerJS for WebRTC signalling -->
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <!-- i18n must load before the rest of the scripts -->
+    <script src="i18n.js"></script>
+</head>
+<body>
+
+    <!-- ══════════════════════════════════════════════════════
+         TITLE SCENE  (TitleScene.java)
+         ══════════════════════════════════════════════════════ -->
+    <div id="titleScreen" class="screen">
+
+        <!-- Dark dungeon background gradient -->
+        <div class="title-bg"></div>
+
+        <!-- Language selector (top-right) -->
+        <div id="langSelectorWrapper" class="lang-selector-wrapper"></div>
+
+        <!-- Banner + torches -->
+        <div class="title-banner-area" id="titleBannerArea">
+            <!-- Banner logo rendered from banners.png sprite via JS -->
+            <canvas id="titleCanvas"></canvas>
+        </div>
+
+        <!-- Button rows  (portrait: 1/2/2/2, matches original layout) -->
+        <div class="title-buttons" id="titleButtons">
+
+            <!-- Row 1: Enter + Support -->
+            <div class="title-btn-row">
+                <button class="chrome-btn btn-enter" id="btnEnter" onclick="titleEnter()">
+                    <span data-i18n="lobby.enter">ENTER</span>
+                    <span class="coop-badge" data-i18n="lobby.coop_hint">singleplayer &amp; co-op</span>
+                </button>
+                <button class="chrome-btn" id="btnSupport" onclick="titleSupport()">
+                    <span data-i18n="lobby.support">SUPPORT</span>
+                </button>
+            </div>
+
+            <!-- Row 2: Rankings | Journal | News -->
+            <div class="title-btn-row">
+                <button class="chrome-btn" id="btnRankings" onclick="titleRankings()">
+                    <span data-i18n="lobby.rankings">RANKINGS</span>
+                </button>
+                <button class="chrome-btn" id="btnJournal" onclick="titleJournal()">
+                    <span data-i18n="lobby.journal">JOURNAL</span>
+                </button>
+                <button class="chrome-btn" id="btnNews" onclick="titleNews()">
+                    <span data-i18n="lobby.news">NEWS</span>
+                </button>
+            </div>
+
+            <!-- Row 3: Settings | Changes | About -->
+            <div class="title-btn-row">
+                <button class="chrome-btn" id="btnSettings" onclick="titleSettings()">
+                    <span data-i18n="lobby.settings">SETTINGS</span>
+                </button>
+                <button class="chrome-btn" id="btnChanges" onclick="titleChanges()">
+                    <span data-i18n="lobby.changes">CHANGES</span>
+                </button>
+                <button class="chrome-btn" id="btnAbout" onclick="titleAbout()">
+                    <span data-i18n="lobby.about">ABOUT</span>
+                </button>
+            </div>
+
+        </div>
+
+        <!-- Version label -->
+        <div class="title-version" id="titleVersion">v0.1.0-coop</div>
+
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════
+         CO-OP OVERLAY  (WndOptions style)
+         ══════════════════════════════════════════════════════ -->
+    <div id="coopOverlay" class="hidden">
+        <div class="coop-window">
+
+            <!-- Tab: choose mode -->
+            <div id="coopModePanel">
+                <h2 data-i18n="lobby.coop_title">MULTIPLAYER</h2>
+
+                <div class="coop-input" style="background:none;border:none;box-shadow:none;color:#888;font-size:6px;padding:4px 0 8px;" data-i18n="lobby.name_label">Your name:</div>
+                <input type="text" id="playerNameInput" class="coop-input"
+                       data-i18n="lobby.name_placeholder" data-i18n-attr="placeholder"
+                       placeholder="Enter Hero Name" value="Hero" style="margin-bottom:10px;">
+
+                <div class="coop-btn-row">
+                    <button class="chrome-btn btn-enter" style="flex:1;" onclick="coopSingleplayer()" data-i18n="lobby.play_single">SINGLEPLAYER</button>
+                </div>
+                <div class="coop-btn-row" style="margin-top:6px;">
+                    <button class="chrome-btn" style="flex:1;" onclick="coopHost()" data-i18n="lobby.host">HOST CO-OP</button>
+                    <button class="chrome-btn" style="flex:1;" onclick="coopShowJoin()" data-i18n="lobby.join">JOIN CO-OP</button>
+                </div>
+                <div class="coop-btn-row" style="margin-top:6px;">
+                    <button class="chrome-btn" style="flex:1;color:#888;" onclick="closeCoopOverlay()" data-i18n="lobby.back">BACK</button>
+                </div>
+            </div>
+
+            <!-- Tab: hosting – room code -->
+            <div id="coopHostPanel" class="hidden">
+                <h2 data-i18n="lobby.hosting">HOSTING</h2>
+                <p class="coop-section-label" data-i18n="lobby.waiting">Waiting for partner...</p>
+                <p class="coop-section-label" style="margin-top:6px;" data-i18n="lobby.share_code">Share this code:</p>
+                <div id="myIdVal" class="coop-room-code">Generating...</div>
+                <div class="coop-btn-row" style="margin-top:10px;">
+                    <button class="chrome-btn" style="flex:1;color:#888;" onclick="coopCancelHost()" data-i18n="lobby.cancel">CANCEL</button>
+                </div>
+            </div>
+
+            <!-- Tab: joining – enter code -->
+            <div id="coopJoinPanel" class="hidden">
+                <h2 data-i18n="lobby.joining">JOIN GAME</h2>
+                <p class="coop-section-label" style="margin-bottom:8px;" data-i18n="lobby.enter_code_label">Enter host room code:</p>
+                <input type="text" id="joinCodeInput" class="coop-input"
+                       data-i18n="lobby.enter_code" data-i18n-attr="placeholder"
+                       placeholder="Room Code" style="margin-bottom:10px;">
+                <div class="coop-btn-row">
+                    <button class="chrome-btn btn-enter" style="flex:1;" onclick="joinGameSubmit()" data-i18n="lobby.connect">CONNECT</button>
+                    <button class="chrome-btn" style="flex:1;color:#888;" onclick="coopBackToMode()" data-i18n="lobby.back">BACK</button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════
+         HERO SELECT SCENE  (HeroSelectScene.java)
+         ══════════════════════════════════════════════════════ -->
+    <div id="heroSelectScreen" class="screen hidden">
+
+        <!-- Full-screen splash art background -->
+        <div class="hero-bg" id="heroBg"></div>
+
+        <!-- Language selector (top-right) -->
+        <div id="langSelectorWrapper2" class="hero-lang-wrapper"></div>
+
+        <!-- Back button -->
+        <button class="hero-back-btn" onclick="goBackToTitle()" data-i18n="lobby.back">← BACK</button>
+
+        <!-- Left info panel: title + name + description + start -->
+        <div class="hero-info-panel">
+            <div class="hero-select-title" data-i18n="class.choose">Choose Your Class</div>
+            <div class="hero-name-display" id="heroNameDisplay">—</div>
+            <div class="hero-desc-display" id="heroDescDisplay" data-i18n="class.pick_hint">Select a hero below.</div>
+            <button class="hero-start-btn" id="heroStartBtn" onclick="startGame()" data-i18n="class.descend">DESCEND</button>
+        </div>
+
+        <!-- Bottom bar: hero class buttons -->
+        <div class="hero-buttons-bar" id="heroButtonsBar">
+            <!-- Dynamically injected by JS -->
+        </div>
+
+    </div>
+
+    <!-- ══════════════════════════════════════════════════════
+         MAIN GAME INTERFACE
+         ══════════════════════════════════════════════════════ -->
+    <div id="gameInterface" class="game-container hidden">
+
+        <!-- Render surface wrapper -->
+        <div id="canvasWrapper" class="canvas-wrapper">
+            <canvas id="gameCanvas"></canvas>
+
+            <!-- Mini-Map Overlay -->
+            <div id="miniMapOverlay" class="minimap-overlay hidden">
+                <div class="minimap-header">
+                    <span data-i18n="action.map">MAP</span>
+                    <button class="close-btn" onclick="toggleMiniMap()">&#215;</button>
+                </div>
+                <canvas id="miniMapCanvas" width="220" height="220"></canvas>
+            </div>
+
+            <!-- Floating Inventory Panel -->
+            <div id="inventoryModal" class="inventory-modal hidden">
+                <div class="inv-header">
+                    <span class="inv-title" data-i18n="inv.title">Hero Inventory</span>
+                    <button class="close-btn" onclick="toggleInventory()">&#215;</button>
+                </div>
+                <div id="invGrid" class="inv-grid"></div>
+                <div id="invDesc" class="inv-description" data-i18n="inv.select">
+                    Select an item to view description.
+                </div>
+                <div class="inv-actions">
+                    <button id="useBtn" class="btn-primary btn-small hidden" onclick="useSelectedItem()" data-i18n="inv.use">USE</button>
+                    <button class="btn-secondary btn-small" onclick="toggleInventory()" data-i18n="inv.close">CLOSE</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar HUD -->
+        <div class="sidebar">
+            <div>
+                <h2 id="hudName">Hero</h2>
+                <div id="hudClass" class="hud-class-label">Warrior</div>
+            </div>
+
+            <!-- HP Bar -->
+            <div class="hud-group">
+                <div class="hud-row">
+                    <span class="hud-label" data-i18n="hud.hp">HP</span>
+                    <span id="hpText" class="hud-value">20 / 20</span>
+                </div>
+                <div class="hp-bar-bg">
+                    <div id="hpFill" class="hp-bar-fill"></div>
+                </div>
+            </div>
+
+            <!-- Hunger Bar -->
+            <div class="hud-group">
+                <div class="hud-row">
+                    <span class="hud-label" data-i18n="hud.hunger">Hunger</span>
+                    <span id="hungerText" class="hud-value hunger-value">Well Fed</span>
+                </div>
+                <div class="hp-bar-bg">
+                    <div id="hungerFill" class="hunger-bar-fill" style="width:100%"></div>
+                </div>
+            </div>
+
+            <!-- Stats -->
+            <div class="hud-group">
+                <div class="hud-row">
+                    <span class="hud-label" data-i18n="hud.level">Level</span>
+                    <span id="hudLevel" class="hud-value">1</span>
+                </div>
+                <div class="hud-row">
+                    <span class="hud-label" data-i18n="hud.gold">Gold</span>
+                    <span id="hudGold" class="hud-value">0</span>
+                </div>
+                <div class="hud-row">
+                    <span class="hud-label" data-i18n="hud.depth">Depth</span>
+                    <span id="hudDepth" class="hud-value">1</span>
+                </div>
+            </div>
+
+            <!-- Action Belt -->
+            <div class="hud-group">
+                <div class="hud-row" style="margin-bottom:8px;">
+                    <span class="hud-label" data-i18n="controls.title" style="font-size:6px;">Controls:</span>
+                </div>
+                <div class="quickslots">
+                    <button class="slot-btn" onclick="toggleInventory()"   data-i18n="action.inv">INV</button>
+                    <button class="slot-btn" onclick="performAction(0,0)"  data-i18n="action.wait">WAIT</button>
+                    <button class="slot-btn" onclick="toggleMiniMap()"     data-i18n="action.map">MAP</button>
+                    <button class="slot-btn" onclick="advanceLevel()"      data-i18n="action.skip">SKIP</button>
+                    <button class="slot-btn" onclick="quitToMenu()"        data-i18n="action.quit">QUIT</button>
+                </div>
+            </div>
+
+            <!-- Controls Hint -->
+            <div class="hud-group controls-hint">
+                • <b style="color:#bbb" data-i18n="controls.move">WASD / Arrows – move / attack</b><br>
+                • <b style="color:#bbb" data-i18n="controls.wait">Space – wait a turn</b><br>
+                • <b style="color:#bbb" data-i18n="controls.click">Click nearby tile – interact</b><br>
+                • <b style="color:#bbb" data-i18n="controls.map">M – toggle mini-map</b>
+            </div>
+        </div>
+
+        <!-- Chat Logs Drawer -->
+        <div class="bottom-panel">
+            <div id="chatLog" class="chat-log">
+                <div class="chat-msg system" data-i18n="chat.welcome">Welcome to Shattered Pixel Dungeon Co-op.</div>
+            </div>
+            <div class="chat-input-wrapper">
+                <input type="text" id="chatInput" class="chat-input"
+                       data-i18n="chat.placeholder" data-i18n-attr="placeholder"
+                       placeholder="Message co-op partner..." autocomplete="off">
+                <button class="chat-send-btn" onclick="sendChatMessage()" data-i18n="chat.send">SEND</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Engine scripts ──────────────────────────────────── -->
+    <script src="assets.js"></script>
+    <script src="dungeon.js"></script>
+    <script src="entities.js"></script>
+    <script src="network.js"></script>
+    <script src="game.js"></script>
+
+    <script>
+    // ═══════════════════════════════════════════════════════════
+    //  HERO DEFINITIONS  (6 classes matching the original game)
+    // ═══════════════════════════════════════════════════════════
+    const HERO_CLASSES = [
+        {
+            id:       'warrior',
+            nameKey:  'hero.warrior.name',
+            descKey:  'hero.warrior.desc',
+            splash:   '/assets/splashes/warrior.jpg',
+            // avatars.png spritesheet offset (16×16 per frame, 2 frames per class)
+            // Row 0 = warrior
+            avatarRow: 0
+        },
+        {
+            id:       'mage',
+            nameKey:  'hero.mage.name',
+            descKey:  'hero.mage.desc',
+            splash:   '/assets/splashes/mage.jpg',
+            avatarRow: 1
+        },
+        {
+            id:       'rogue',
+            nameKey:  'hero.rogue.name',
+            descKey:  'hero.rogue.desc',
+            splash:   '/assets/splashes/rogue.jpg',
+            avatarRow: 2
+        },
+        {
+            id:       'huntress',
+            nameKey:  'hero.huntress.name',
+            descKey:  'hero.huntress.desc',
+            splash:   '/assets/splashes/huntress.jpg',
+            avatarRow: 3
+        },
+        {
+            id:       'duelist',
+            nameKey:  'hero.duelist.name',
+            descKey:  'hero.duelist.desc',
+            splash:   '/assets/splashes/duelist.jpg',
+            avatarRow: 4
+        },
+        {
+            id:       'cleric',
+            nameKey:  'hero.cleric.name',
+            descKey:  'hero.cleric.desc',
+            splash:   '/assets/splashes/cleric.jpg',
+            avatarRow: 5
+        },
+    ];
+
+    // ═══════════════════════════════════════════════════════════
+    //  STATE
+    // ═══════════════════════════════════════════════════════════
+    let selectedClass   = null;
+    let playerNameVal   = 'Hero';
+    let avatarImg       = null;   // loaded avatars.png spritesheet
+
+    // ═══════════════════════════════════════════════════════════
+    //  BOOT
+    // ═══════════════════════════════════════════════════════════
+    document.addEventListener('DOMContentLoaded', () => {
+        I18n.init();
+
+        // Mount language selectors
+        ['langSelectorWrapper', 'langSelectorWrapper2'].forEach(id => {
+            const w = document.getElementById(id);
+            if (w) w.appendChild(I18n.buildSelector());
+        });
+
+        // Draw title banner from banners.png
+        drawTitleBanner();
+
+        // Build hero-select bottom bar
+        buildHeroButtons();
+
+        // Preload avatars spritesheet for hero buttons
+        avatarImg = new Image();
+        avatarImg.src = '/assets/sprites/avatars.png';
+        avatarImg.onload = () => updateHeroAvatars();
+    });
+
+    window.addEventListener('load', () => {
+        Network.init(id => {
+            document.getElementById('myIdVal').textContent = id;
+        });
+    });
+
+    // ═══════════════════════════════════════════════════════════
+    //  TITLE BANNER  (banners.png – portrait title at row 0)
+    //  banners.png layout (approx): each banner 132×24 px
+    //  Portrait title top-left at (0, 0), landscape at (0, 24)
+    // ═══════════════════════════════════════════════════════════
+    function drawTitleBanner() {
+        const bannersImg = new Image();
+        bannersImg.src = '/assets/interfaces/banners.png';
+        bannersImg.onload = () => {
+            // The banners spritesheet has portrait title as the first region.
+            // We'll extract the top-left segment and scale it up 3×.
+            // Approximate region: x=0, y=0, w=132, h=24
+            const SRC_W = 132, SRC_H = 24;
+            const SCALE  = 3;
+            const canvas  = document.getElementById('titleCanvas');
+            canvas.width  = SRC_W * SCALE;
+            canvas.height = SRC_H * SCALE;
+            const ctx = canvas.getContext('2d');
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(bannersImg, 0, 0, SRC_W, SRC_H,
+                          0, 0, SRC_W * SCALE, SRC_H * SCALE);
+
+            // Arrange torches after banner is measured
+            placeTorches(canvas);
+
+            // Animate a golden glow sine-pulse on the canvas
+            animateBannerGlow(ctx, bannersImg, SRC_W, SRC_H, SCALE);
+        };
+        bannersImg.onerror = () => {
+            // Fallback: text logo
+            const canvas = document.getElementById('titleCanvas');
+            canvas.width = 380; canvas.height = 64;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#ffde00';
+            ctx.font = 'bold 14px "Press Start 2P", monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('SHATTERED PIXEL DUNGEON', 190, 28);
+            ctx.fillStyle = '#c8c8c8';
+            ctx.font = '8px "Press Start 2P", monospace';
+            ctx.fillText('CO-OP EDITION', 190, 50);
+        };
+    }
+
+    let _glowTime = 0;
+    let _glowRaf  = null;
+    function animateBannerGlow(ctx, img, sw, sh, scale) {
+        const glowCanvas = document.createElement('canvas');
+        glowCanvas.width  = sw * scale;
+        glowCanvas.height = sh * scale;
+        const gCtx = glowCanvas.getContext('2d');
+        gCtx.imageSmoothingEnabled = false;
+
+        // Approximate glow region (the green glyph overlay, second column of sheet)
+        // banners.png: glow starts at x=132 (portrait) or adjust as needed
+        function step(ts) {
+            _glowTime += 0.04;
+            const alpha = Math.max(0, Math.sin(_glowTime)) * 0.55;
+
+            ctx.clearRect(0, 0, sw*scale, sh*scale);
+            // Base banner
+            ctx.drawImage(img, 0, 0, sw, sh, 0, 0, sw*scale, sh*scale);
+
+            // Glow layer (uses additive blend – we approximate with globalAlpha)
+            if (alpha > 0.01) {
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                ctx.globalCompositeOperation = 'screen';
+                // The glow sprite is right of the base banner in banners.png
+                ctx.drawImage(img, sw, 0, sw, sh, 0, 0, sw*scale, sh*scale);
+                ctx.restore();
+            }
+
+            if (_glowTime >= Math.PI * 1.5) _glowTime = 0;
+            _glowRaf = requestAnimationFrame(step);
+        }
+        _glowRaf = requestAnimationFrame(step);
+    }
+
+    function placeTorches(bannerCanvas) {
+        const area = document.getElementById('titleBannerArea');
+        // Remove old torches
+        area.querySelectorAll('.torch-wrapper').forEach(t => t.remove());
+
+        const rect = bannerCanvas.getBoundingClientRect();
+        const areaRect = area.getBoundingClientRect();
+
+        function makeTorch(leftOffset) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'torch-wrapper';
+            wrapper.style.position = 'absolute';
+            wrapper.style.bottom   = '0px';
+            wrapper.style.left     = leftOffset + 'px';
+
+            const fb = document.createElement('canvas');
+            fb.width  = 16;
+            fb.height = 24;
+            fb.style.imageRendering = 'pixelated';
+            fb.style.display = 'block';
+            wrapper.appendChild(fb);
+
+            // Animate fireball frames from fireball-short.png (7 frames, each 16×24)
+            const fbImg = new Image();
+            fbImg.src = '/assets/effects/fireball-short.png';
+            let frame = 0;
+            let lastTime = 0;
+            const FRAME_MS = 110;
+            const FRAME_COUNT = 7;
+            const FRAME_W = 16, FRAME_H = 24;
+            const fCtx = fb.getContext('2d');
+            fCtx.imageSmoothingEnabled = false;
+
+            function animFire(ts) {
+                if (ts - lastTime >= FRAME_MS) {
+                    lastTime = ts;
+                    fCtx.clearRect(0, 0, 16, 24);
+                    if (fbImg.complete) {
+                        fCtx.drawImage(fbImg,
+                            frame * FRAME_W, 0, FRAME_W, FRAME_H,
+                            0, 0, 16, 24);
+                        frame = (frame + 1) % FRAME_COUNT;
+                    }
+                }
+                requestAnimationFrame(animFire);
+            }
+            requestAnimationFrame(animFire);
+
+            return wrapper;
+        }
+
+        // Left torch: roughly at 30px from left edge of canvas
+        const leftTorch  = makeTorch(rect.left - areaRect.left + 30);
+        // Right torch: roughly at (canvas width - 46) from left edge
+        const rightTorch = makeTorch(rect.left - areaRect.left + rect.width - 46);
+
+        area.appendChild(leftTorch);
+        area.appendChild(rightTorch);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  SCREEN MANAGEMENT
+    // ═══════════════════════════════════════════════════════════
+    function showScreen(id) {
+        document.getElementById('titleScreen').classList.add('hidden');
+        document.getElementById('heroSelectScreen').classList.add('hidden');
+        document.getElementById('gameInterface').classList.add('hidden');
+        document.getElementById(id).classList.remove('hidden');
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  TITLE SCENE BUTTONS
+    // ═══════════════════════════════════════════════════════════
+    function titleEnter() {
+        // Show co-op lobby overlay
+        document.getElementById('coopOverlay').classList.remove('hidden');
+        showCoopPanel('coopModePanel');
+    }
+
+    function titleSupport()  { alert(I18n.t('lobby.support_msg',  'Support the developer at shatteredpixel.com!')); }
+    function titleRankings() { alert(I18n.t('lobby.rankings_msg', 'Rankings not yet implemented in Co-op edition.')); }
+    function titleJournal()  { alert(I18n.t('lobby.journal_msg',  'Journal not yet implemented in Co-op edition.')); }
+    function titleNews()     { alert(I18n.t('lobby.news_msg',     'No news items available.')); }
+    function titleChanges()  { alert(I18n.t('lobby.changes_msg',  'Changelog: v0.1.0 – Web Co-op prototype.')); }
+    function titleSettings() { alert(I18n.t('lobby.settings_msg', 'Settings panel coming soon.')); }
+    function titleAbout()    { alert(I18n.t('lobby.about_msg',    'Shattered Pixel Dungeon\n© 2014-2026 Evan Debenham\nGPLv3 — Web Co-op prototype.')); }
+
+    // ═══════════════════════════════════════════════════════════
+    //  CO-OP OVERLAY
+    // ═══════════════════════════════════════════════════════════
+    function showCoopPanel(panelId) {
+        ['coopModePanel','coopHostPanel','coopJoinPanel'].forEach(id => {
+            document.getElementById(id).classList.add('hidden');
+        });
+        document.getElementById(panelId).classList.remove('hidden');
+    }
+
+    function closeCoopOverlay() {
+        document.getElementById('coopOverlay').classList.add('hidden');
+        showCoopPanel('coopModePanel');
+    }
+
+    function readPlayerName() {
+        const n = document.getElementById('playerNameInput').value.trim();
+        if (n) playerNameVal = n;
+    }
+
+    function coopSingleplayer() {
+        readPlayerName();
+        GameState.singlePlayer = true;
+        closeCoopOverlay();
+        Sound.playMusic('theme_1.ogg');
+        showScreen('heroSelectScreen');
+    }
+
+    function coopHost() {
+        readPlayerName();
+        GameState.singlePlayer = false;
+        showCoopPanel('coopHostPanel');
+        Network.hostGame(() => {
+            logMessage(I18n.t('chat.welcome'), 'system');
+            closeCoopOverlay();
+            Sound.playMusic('theme_1.ogg');
+            showScreen('heroSelectScreen');
+        });
+    }
+
+    function coopShowJoin() {
+        showCoopPanel('coopJoinPanel');
+    }
+
+    function coopBackToMode() {
+        showCoopPanel('coopModePanel');
+    }
+
+    function coopCancelHost() {
+        window.location.reload();
+    }
+
+    function joinGameSubmit() {
+        const targetId = document.getElementById('joinCodeInput').value.trim();
+        readPlayerName();
+        if (!targetId) { alert(I18n.t('lobby.enter_code')); return; }
+        GameState.singlePlayer = false;
+        Sound.playMusic('theme_1.ogg');
+        Network.joinGame(targetId, () => {
+            logMessage(I18n.t('chat.welcome'), 'system');
+            closeCoopOverlay();
+            showScreen('heroSelectScreen');
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    //  HERO SELECT SCENE
+    // ═══════════════════════════════════════════════════════════
+    function buildHeroButtons() {
+        const bar = document.getElementById('heroButtonsBar');
+        bar.innerHTML = '';
+        HERO_CLASSES.forEach(hero => {
+            const btn = document.createElement('button');
+            btn.className = 'hero-btn';
+            btn.id = `heroBtn-${hero.id}`;
+            btn.onclick = () => selectHero(hero.id);
+
+            // Avatar canvas (from avatars.png)
+            const av = document.createElement('canvas');
+            av.width  = 12;
+            av.height = 15;
+            av.className = 'hero-btn-avatar';
+            av.id = `heroAv-${hero.id}`;
+            btn.appendChild(av);
+
+            // Label
+            const lbl = document.createElement('span');
+            lbl.dataset.i18n = hero.nameKey;
+            lbl.textContent  = hero.id.toUpperCase();
+            btn.appendChild(lbl);
+
+            bar.appendChild(btn);
+        });
+    }
+
+    function updateHeroAvatars() {
+        if (!avatarImg || !avatarImg.complete) return;
+        HERO_CLASSES.forEach(hero => {
+            const av  = document.getElementById(`heroAv-${hero.id}`);
+            if (!av) return;
+            const ctx = av.getContext('2d');
+            ctx.imageSmoothingEnabled = false;
+            // avatars.png: 12 wide × 15 tall per frame, 2 frames per class (idle anim)
+            // Row = hero.avatarRow * 15, col 0 = first idle frame
+            ctx.clearRect(0, 0, 12, 15);
+            ctx.drawImage(avatarImg,
+                0, hero.avatarRow * 15, 12, 15,
+                0, 0, 12, 15);
+        });
+    }
+
+    function selectHero(classId) {
+        selectedClass = classId;
+
+        // Update button states
+        document.querySelectorAll('.hero-btn').forEach(b => b.classList.remove('selected'));
+        document.getElementById(`heroBtn-${classId}`).classList.add('selected');
+
+        // Find hero data
+        const hero = HERO_CLASSES.find(h => h.id === classId);
+        if (!hero) return;
+
+        // Update splash art background
+        const bg = document.getElementById('heroBg');
+        bg.style.backgroundImage = `url('${hero.splash}')`;
+
+        // Update name + description
+        document.getElementById('heroNameDisplay').textContent = I18n.t(hero.nameKey, hero.id.toUpperCase());
+        document.getElementById('heroDescDisplay').textContent = I18n.t(hero.descKey, '...');
+
+        // Show start button
+        document.getElementById('heroStartBtn').classList.add('visible');
+    }
+
+    function goBackToTitle() {
+        selectedClass = null;
+        showScreen('titleScreen');
+    }
+
+    function startGame() {
+        if (!selectedClass) return;
+        showScreen('gameInterface');
+        Assets.load(() => {
+            initGame(selectedClass, playerNameVal);
+            resizeCanvas();
+            Sound.playMusic('sewers_1.ogg');
+        });
+    }
+
+    function quitToMenu() {
+        Sound.stopMusic();
+        selectedClass = null;
+        showScreen('titleScreen');
+        Sound.playMusic('theme_1.ogg');
+    }
+    </script>
+</body>
+</html>

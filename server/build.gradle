@@ -1,0 +1,32 @@
+apply plugin: 'java-library'
+
+[compileJava, compileTestJava]*.options*.encoding = 'UTF-8'
+java.sourceCompatibility = java.targetCompatibility = appJavaCompatibility
+
+dependencies {
+    implementation project(':core')
+}
+
+// Plain jar with a Main-Class manifest. The server only needs the multiplayer
+// classes from :core at runtime; full libGDX is pulled in transitively but not
+// used, so we keep a thin jar and run via the gradle runtime classpath instead
+// of a fragile fat-jar.
+jar {
+    manifest {
+        attributes 'Main-Class': 'com.shatteredpixel.shatteredpixeldungeon.multiplayer.server.MultiplayerServer'
+    }
+}
+
+// Convenience task to launch the dedicated server from the command line:
+//   ./gradlew :server:runServer              (default port 18765)
+//   ./gradlew :server:runServer -PserverPort=18770
+tasks.register('runServer', JavaExec) {
+    group = 'application'
+    description = 'Runs the dedicated multiplayer server'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.shatteredpixel.shatteredpixeldungeon.multiplayer.server.MultiplayerServer'
+    def port = project.findProperty('serverPort')?.toString()?.trim()
+    if (port != null && !port.isEmpty()) {
+        args = [port]
+    }
+}
