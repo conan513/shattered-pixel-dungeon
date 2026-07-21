@@ -40,8 +40,14 @@ public class NetClient {
 		default void onRoomInfo(String code, List<NetPlayer> players) {}
 		default void onPlayerJoin(NetPlayer player) {}
 		default void onPlayerLeave(int playerId) {}
+		default void onReadyChanged(int playerId, boolean ready, String heroClass) {}
+		default void onCountdown(int seconds) {}
 		default void onChat(int playerId, String name, String text) {}
+		default void onHostPromote(int newHostId) {}
+		default void onTurnChange(int activePlayerId, boolean battlePhase) {}
+		default void onSnapshot(NetMessage data) {}
 		default void onGame(NetMessage data) {}
+		default void onSeed(long seed) {}  // host broadcasted dungeon seed
 		default void onError(String message) {}
 		default void onLog(String message) {}
 	}
@@ -52,6 +58,7 @@ public class NetClient {
 
 	private State state = State.DISCONNECTED;
 	private int playerId = -1;
+	private int hostId = -1;
 	private String roomCode = null;
 	private final List<NetPlayer> players = new ArrayList<>();
 
@@ -76,6 +83,14 @@ public class NetClient {
 
 	public int getPlayerId() {
 		return playerId;
+	}
+
+	public int getHostId() {
+		return hostId;
+	}
+
+	public boolean isHost() {
+		return playerId != -1 && hostId != -1 && playerId == hostId;
 	}
 
 	public String getRoomCode() {
@@ -115,6 +130,8 @@ public class NetClient {
 	public void disconnect() {
 		setState(State.DISCONNECTED);
 		roomCode = null;
+		hostId = -1;
+		playerId = -1;
 		players.clear();
 		try {
 			if (socket != null) socket.close();
@@ -136,6 +153,17 @@ public class NetClient {
 		send(NetMessage.create(NetProtocol.C_CHAT).put(NetProtocol.F_MSG, text));
 	}
 
+	public void sendReady(boolean ready, String heroClass) {
+		send(NetMessage.create(NetProtocol.C_READY)
+				.put(NetProtocol.F_READY, ready)
+				.put(NetProtocol.F_HERO, heroClass == null ? "warrior" : heroClass));
+	}
+
+	public void sendHero(String heroClass) {
+		send(NetMessage.create(NetProtocol.C_HERO)
+				.put(NetProtocol.F_HERO, heroClass == null ? "warrior" : heroClass));
+	}
+
 	public void sendInput(int dx, int dy, String cmd) {
 		send(NetMessage.create(NetProtocol.C_INPUT)
 				.put(NetProtocol.F_DX, dx)
@@ -143,9 +171,38 @@ public class NetClient {
 				.put(NetProtocol.F_CMD, cmd == null ? "" : cmd));
 	}
 
+	public void sendSnapshot(String payloadJson) {
+		send(NetMessage.create(NetProtocol.C_SNAPSHOT).put(NetProtocol.F_DATA, payloadJson));
+	}
+
+	public void sendTurnChange(int activeId, boolean battlePhase) {
+		send(NetMessage.create(NetProtocol.S_TURN_CHANGE)
+				.put(NetProtocol.F_ACTIVE_ID, activeId)
+				.put(NetProtocol.F_BATTLE, battlePhase));
+	}
+
+	/** Host sends the dungeon seed so all clients generate the same map. */
+	public void sendSeed(long seed) {
+		send(NetMessage.create(NetProtocol.C_INPUT)
+				.put(NetProtocol.F_CMD, "seed")
+				.put(NetProtocol.F_SEED, seed)
+				.put(NetProtocol.F_DX, 0)
+				.put(NetProtocol.F_DY, 0));
+	}
+
+	/** Broadcast absolute hero position so others see us on spawn. */
+	public void sendPosition(int pos) {
+		send(NetMessage.create(NetProtocol.C_INPUT)
+				.put(NetProtocol.F_CMD, "pos")
+				.put(NetProtocol.F_POS, pos)
+				.put(NetProtocol.F_DX, 0)
+				.put(NetProtocol.F_DY, 0));
+	}
+
 	public void leaveRoom() {
 		send(NetMessage.create(NetProtocol.C_LEAVE));
 		roomCode = null;
+		hostId = -1;
 		players.clear();
 	}
 
@@ -179,22 +236,59 @@ public class NetClient {
 				break;
 			case NetProtocol.S_ROOMINFO:
 				roomCode = m.str(NetProtocol.F_CODE);
+				hostId = m.num(NetProtocol.F_HOST_ID);
+				MpTurnManager.INSTANCE.setHostId(hostId);
 				players.clear();
 				for (Object o : m.list(NetProtocol.F_PLAYERS)) {
 					if (o instanceof NetMessage) players.add(NetPlayer.fromMessage((NetMessage) o));
 				}
+				MpTurnManager.INSTANCE.setPlayerOrder(players);
 				setState(State.IN_ROOM);
 				notifyRoomInfo(roomCode, players);
 				break;
 			case NetProtocol.S_PLAYERJOIN:
 				NetPlayer pj = NetPlayer.fromMessage(m);
 				players.add(pj);
+				MpTurnManager.INSTANCE.setPlayerOrder(players);
 				notifyPlayerJoin(pj);
 				break;
 			case NetProtocol.S_PLAYERLEAVE:
 				int pid = m.num(NetProtocol.F_ID);
 				players.removeIf(p -> p.id == pid);
+				MpTurnManager.INSTANCE.setPlayerOrder(players);
 				notifyPlayerLeave(pid);
+				break;
+			case NetProtocol.S_HOST_PROMOTE:
+				hostId = m.num(NetProtocol.F_HOST_ID);
+				MpTurnManager.INSTANCE.setHostId(hostId);
+				notifyHostPromote(hostId);
+				break;
+			case NetProtocol.S_TURN_CHANGE:
+				int activeId = m.num(NetProtocol.F_ACTIVE_ID);
+				boolean battle = m.bool(NetProtocol.F_BATTLE);
+				MpTurnManager.INSTANCE.setActivePlayerId(activeId);
+				MpTurnManager.INSTANCE.setBattlePhase(battle);
+				notifyTurnChange(activeId, battle);
+				break;
+			case NetProtocol.S_SNAPSHOT:
+				notifySnapshot(m);
+				break;
+			case NetProtocol.S_READY:
+				int rPid = m.num(NetProtocol.F_ID);
+				boolean rReady = m.bool(NetProtocol.F_READY);
+				String rHero = m.str(NetProtocol.F_HERO);
+				if (rHero == null) rHero = "warrior";
+				for (NetPlayer p : players) {
+					if (p.id == rPid) {
+						p.ready = rReady;
+						p.heroClass = rHero;
+					}
+				}
+				notifyReadyChanged(rPid, rReady, rHero);
+				break;
+			case NetProtocol.S_COUNTDOWN:
+				int secs = m.num(NetProtocol.F_SECS);
+				notifyCountdown(secs);
 				break;
 			case NetProtocol.S_CHAT:
 				notifyChat(m.num(NetProtocol.F_ID), m.str(NetProtocol.F_NAME), m.str(NetProtocol.F_MSG));
@@ -243,6 +337,26 @@ public class NetClient {
 
 	private void notifyPlayerLeave(int id) {
 		Game.runOnRenderThread(() -> { for (Listener l : listeners) l.onPlayerLeave(id); });
+	}
+
+	private void notifyReadyChanged(int id, boolean ready, String hero) {
+		Game.runOnRenderThread(() -> { for (Listener l : listeners) l.onReadyChanged(id, ready, hero); });
+	}
+
+	private void notifyCountdown(int secs) {
+		Game.runOnRenderThread(() -> { for (Listener l : listeners) l.onCountdown(secs); });
+	}
+
+	private void notifyHostPromote(int newHostId) {
+		Game.runOnRenderThread(() -> { for (Listener l : listeners) l.onHostPromote(newHostId); });
+	}
+
+	private void notifyTurnChange(int activeId, boolean battle) {
+		Game.runOnRenderThread(() -> { for (Listener l : listeners) l.onTurnChange(activeId, battle); });
+	}
+
+	private void notifySnapshot(NetMessage data) {
+		Game.runOnRenderThread(() -> { for (Listener l : listeners) l.onSnapshot(data); });
 	}
 
 	private void notifyChat(int id, String name, String text) {

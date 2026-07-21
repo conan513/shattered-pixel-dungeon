@@ -22,10 +22,12 @@ import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
 import com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient;
 import com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetPlayer;
 import com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetProtocol;
+import com.shatteredpixel.shatteredpixeldungeon.scenes.HeroSelectScene;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.PixelScene;
 import com.shatteredpixel.shatteredpixeldungeon.ui.RedButton;
 import com.shatteredpixel.shatteredpixeldungeon.ui.RenderedTextBlock;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Window;
+import com.watabou.noosa.Game;
 import com.watabou.noosa.TextInput;
 
 import java.util.List;
@@ -37,12 +39,42 @@ public class WndMultiplayer extends Window {
 	private static final int BUTTON_HEIGHT = 16;
 
 	private final NetClient client = NetClient.INSTANCE;
+
+	private RenderedTextBlock statusTxt;
+	private TextInput nameBox;
+	private RedButton btnHost, btnJoin, btnLeave, btnReady, btnSend;
+	private RenderedTextBlock playerList;
+	private RenderedTextBlock chatLog;
+
+	private boolean isLocalReady = false;
+	private final StringBuilder chatHistory = new StringBuilder();
+
+	// Holds the action (createRoom or joinRoom+code) to run once server sends S_WELCOME.
+	// This is necessary because connect() is asynchronous — we cannot call createRoom()
+	// immediately after connect(); the socket is not open yet.
+	private Runnable pendingRoomAction = null;
+
 	private final NetClient.Listener listener = new NetClient.Listener() {
 		@Override
 		public void onStateChanged(NetClient.State s) { refresh(); }
 
 		@Override
-		public void onRoomInfo(String code, List<NetPlayer> players) { refresh(); }
+		public void onWelcome(int playerId) {
+			// Socket is now open and server acknowledged us — safe to create/join a room.
+			if (pendingRoomAction != null) {
+				pendingRoomAction.run();
+				pendingRoomAction = null;
+			}
+		}
+
+		@Override
+		public void onRoomInfo(String code, List<NetPlayer> players) {
+			// Room confirmed by server — close this lobby menu and switch to the
+			// hero selection screen.  HeroSelectScene.create() will detect that
+			// NetClient is IN_ROOM and open WndMultiplayerLobby as an overlay.
+			client.removeListener(listener);
+			Game.switchScene(HeroSelectScene.class);
+		}
 
 		@Override
 		public void onPlayerJoin(NetPlayer p) { refresh(); }
@@ -51,19 +83,25 @@ public class WndMultiplayer extends Window {
 		public void onPlayerLeave(int id) { refresh(); }
 
 		@Override
+		public void onReadyChanged(int id, boolean ready, String heroClass) { refresh(); }
+
+		@Override
+		public void onCountdown(int seconds) {
+			if (seconds > 0) {
+				setStatus("Game starting in " + seconds + "...");
+			} else if (seconds == 0) {
+				setStatus("Starting game!");
+			} else {
+				setStatus("Countdown cancelled.");
+			}
+		}
+
+		@Override
 		public void onChat(int id, String name, String text) { appendChat(name, text); }
 
 		@Override
-		public void onError(String msg) { setStatus(Messages.get(this, "error", msg)); }
+		public void onError(String msg) { setStatus(msg == null ? "Error occurred." : msg); }
 	};
-
-	private RenderedTextBlock statusTxt;
-	private TextInput nameBox;
-	private RedButton btnHost, btnJoin, btnLeave, btnSend;
-	private RenderedTextBlock playerList;
-	private RenderedTextBlock chatLog;
-
-	private final StringBuilder chatHistory = new StringBuilder();
 
 	public WndMultiplayer() {
 		super();
@@ -72,20 +110,22 @@ public class WndMultiplayer extends Window {
 
 		float pos = MARGIN;
 
-		RenderedTextBlock title = PixelScene.renderTextBlock(Messages.get(this, "title"), 9);
+		RenderedTextBlock title = PixelScene.renderTextBlock("MULTIPLAYER LOBBY", 9);
 		title.hardlight(TITLE_COLOR);
 		title.setPos((WIDTH - title.width()) / 2, pos);
 		add(title);
 		pos = title.bottom() + 4;
 
 		// ── Name field (only TextInput in this window) ──
-		RenderedTextBlock nameLabel = PixelScene.renderTextBlock(Messages.get(this, "name"), 6);
+		RenderedTextBlock nameLabel = PixelScene.renderTextBlock("Your Hero Name:", 6);
 		nameLabel.maxWidth(WIDTH - 2 * MARGIN);
 		add(nameLabel);
 		nameLabel.setPos(MARGIN, pos);
 		pos = nameLabel.bottom() + MARGIN;
 
-		nameBox = new TextInput(Chrome.get(Chrome.Type.TOAST_WHITE), false, 9);
+		// Scale font size by camera zoom so text is readable at all zoom levels
+		int nameInputSize = (int) PixelScene.uiCamera.zoom * 9;
+		nameBox = new TextInput(Chrome.get(Chrome.Type.TOAST_WHITE), false, nameInputSize);
 		nameBox.setMaxLength(24);
 		nameBox.setText("Hero");
 		add(nameBox);
@@ -93,18 +133,20 @@ public class WndMultiplayer extends Window {
 		pos += BUTTON_HEIGHT + MARGIN;
 
 		// ── Host button ──
-		btnHost = new RedButton(Messages.get(this, "create")) {
+		btnHost = new RedButton("HOST GAME") {
 			@Override
 			protected void onClick() {
+				setStatus("Connecting to server...");
+				// Set action to run once server confirms connection (onWelcome)
+				pendingRoomAction = () -> client.createRoom();
 				client.connect(NetProtocol.DEFAULT_HOST, NetProtocol.DEFAULT_PORT, nameBox.getText().trim());
-				client.createRoom();
 			}
 		};
 		add(btnHost);
 		btnHost.setRect(MARGIN, pos, (WIDTH - 2 * MARGIN - MARGIN) / 2f, BUTTON_HEIGHT);
 
 		// ── Join button (opens code dialog) ──
-		btnJoin = new RedButton(Messages.get(this, "join")) {
+		btnJoin = new RedButton("JOIN GAME") {
 			@Override
 			protected void onClick() {
 				openJoinDialog();
@@ -114,15 +156,29 @@ public class WndMultiplayer extends Window {
 		btnJoin.setRect(btnHost.right() + MARGIN, pos, (WIDTH - 2 * MARGIN - MARGIN) / 2f, BUTTON_HEIGHT);
 		pos += BUTTON_HEIGHT + MARGIN;
 
-		// ── Leave ──
-		btnLeave = new RedButton(Messages.get(this, "leave")) {
+		// ── Ready button ──
+		btnReady = new RedButton("READY") {
 			@Override
 			protected void onClick() {
+				isLocalReady = !isLocalReady;
+				text(isLocalReady ? "UNREADY" : "READY");
+				client.sendReady(isLocalReady, "warrior");
+			}
+		};
+		add(btnReady);
+		btnReady.setRect(MARGIN, pos, (WIDTH - 2 * MARGIN - MARGIN) / 2f, BUTTON_HEIGHT);
+
+		// ── Leave button ──
+		btnLeave = new RedButton("LEAVE ROOM") {
+			@Override
+			protected void onClick() {
+				isLocalReady = false;
+				btnReady.text("READY");
 				client.leaveRoom();
 			}
 		};
 		add(btnLeave);
-		btnLeave.setRect(MARGIN, pos, WIDTH - 2 * MARGIN, BUTTON_HEIGHT);
+		btnLeave.setRect(btnReady.right() + MARGIN, pos, (WIDTH - 2 * MARGIN - MARGIN) / 2f, BUTTON_HEIGHT);
 		pos += BUTTON_HEIGHT + MARGIN;
 
 		// ── Player list ──
@@ -140,13 +196,13 @@ public class WndMultiplayer extends Window {
 		pos = chatLog.bottom() + MARGIN;
 
 		// ── Send chat (opens WndTextInput) ──
-		btnSend = new RedButton(Messages.get(this, "chat_hint")) {
+		btnSend = new RedButton("CHAT") {
 			@Override
 			protected void onClick() {
 				ShatteredPixelDungeon.scene().addToFront(new WndTextInput(
-						"", Messages.get(WndMultiplayer.class, "chat_hint"),
+						"", "Enter chat message:",
 						"", 120, false,
-						Messages.get(this, "join"), null) {
+						"SEND", "CANCEL") {
 					@Override
 					public void onSelect(boolean positive, String text) {
 						if (positive && text != null && !text.trim().isEmpty()) {
@@ -161,31 +217,33 @@ public class WndMultiplayer extends Window {
 		pos += BUTTON_HEIGHT + MARGIN;
 
 		// ── Status line ──
-		statusTxt = PixelScene.renderTextBlock("", 6);
+		statusTxt = PixelScene.renderTextBlock("Enter name, then click Host or Join.", 6);
 		statusTxt.maxWidth(WIDTH - 2 * MARGIN);
 		statusTxt.hardlight(0x888888);
 		add(statusTxt);
 		statusTxt.setPos(MARGIN, pos);
 		pos = statusTxt.bottom() + MARGIN;
 
+		// ── resize() must come first, then re-apply nameBox rect so the
+		//    libGDX Stage positions the text field correctly (same fix as WndTextInput) ──
 		resize(WIDTH, (int) pos);
-
-		// Automatically connect to the fixed lobby server on open.
-		setStatus(Messages.get(this, "connecting"));
-		client.connect(NetProtocol.DEFAULT_HOST, NetProtocol.DEFAULT_PORT, nameBox.getText().trim());
+		nameBox.setRect(nameBox.left(), nameBox.top(), nameBox.width(), nameBox.height());
 		refresh();
 	}
 
 	private void openJoinDialog() {
 		ShatteredPixelDungeon.scene().addToFront(new WndTextInput(
-				"", Messages.get(WndMultiplayer.class, "room_code"),
+				"", "Enter 6-letter Room Code:",
 				"", 8, false,
-				Messages.get(this, "join"), Messages.get(this, "leave")) {
+				"CONNECT", "CANCEL") {
 			@Override
 			public void onSelect(boolean positive, String text) {
 				if (positive && text != null && !text.trim().isEmpty()) {
+					final String code = text.trim().toUpperCase();
+					setStatus("Connecting to server...");
+					// Set action to run once server confirms connection (onWelcome)
+					pendingRoomAction = () -> client.joinRoom(code);
 					client.connect(NetProtocol.DEFAULT_HOST, NetProtocol.DEFAULT_PORT, nameBox.getText().trim());
-					client.joinRoom(text.trim().toUpperCase());
 				}
 			}
 		});
@@ -194,7 +252,7 @@ public class WndMultiplayer extends Window {
 	private void appendChat(String name, String text) {
 		chatHistory.append(name).append(": ").append(text).append("\n");
 		String[] lines = chatHistory.toString().split("\n");
-		int start = Math.max(0, lines.length - 6);
+		int start = Math.max(0, lines.length - 5);
 		StringBuilder visible = new StringBuilder();
 		for (int i = start; i < lines.length; i++) visible.append(lines[i]).append("\n");
 		chatLog.text(visible.toString());
@@ -216,30 +274,29 @@ public class WndMultiplayer extends Window {
 		boolean connected = s == NetClient.State.CONNECTED;
 		boolean inRoom = s == NetClient.State.IN_ROOM;
 
-		nameBox.active = offline;
-		btnHost.enable(connected || inRoom);
-		btnJoin.enable(connected || inRoom);
+		nameBox.active = !inRoom;
+		btnHost.enable(!inRoom);
+		btnJoin.enable(!inRoom);
+		btnReady.enable(inRoom);
 		btnLeave.enable(inRoom);
 		btnSend.enable(inRoom);
 
 		if (offline) {
-			setStatus(Messages.get(this, "ui_offline"));
+			setStatus("Offline. Enter name, then Host or Join.");
 			playerList.text("");
-		} else if (connected) {
-			setStatus(Messages.get(this, "connected"));
+		} else if (connected && !inRoom) {
+			setStatus("Connected to server. Creating/Joining room...");
 			playerList.text("");
 		} else if (inRoom) {
-			setStatus(Messages.get(this, "ui_in_room", client.getRoomCode()));
-			StringBuilder sb = new StringBuilder(Messages.get(this, "players")).append("\n");
+			setStatus("Room: " + client.getRoomCode());
+			StringBuilder sb = new StringBuilder("PLAYERS:\n");
 			for (NetPlayer p : client.getPlayers()) {
 				sb.append("- ").append(p.name)
-						.append(p.id == client.getPlayerId() ? " (you)" : "").append("\n");
+						.append(p.id == client.getPlayerId() ? " (you)" : "")
+						.append(p.ready ? " [READY]" : " [NOT READY]")
+						.append("\n");
 			}
 			playerList.text(sb.toString());
-		}
-
-		if (inRoom && client.getPlayers().size() < 2) {
-			setStatus(Messages.get(this, "waiting_for_partner"));
 		}
 
 		playerList.setPos(playerList.left(), playerList.top());

@@ -43,10 +43,14 @@ import com.shatteredpixel.shatteredpixeldungeon.ui.RenderedTextBlock;
 import com.shatteredpixel.shatteredpixeldungeon.ui.StyledButton;
 import com.shatteredpixel.shatteredpixeldungeon.ui.Window;
 import com.shatteredpixel.shatteredpixeldungeon.utils.DungeonSeed;
+import com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient;
+import com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetPlayer;
+import com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetProtocol;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndChallenges;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndHeroInfo;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndKeyBindings;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndMessage;
+import com.shatteredpixel.shatteredpixeldungeon.windows.WndMultiplayerLobby;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndOptions;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndTextInput;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndTitledMessage;
@@ -96,6 +100,78 @@ public class HeroSelectScene extends PixelScene {
 
 	private static boolean heroWasRandomized = true;
 	private static boolean chalWasRandomized = false;
+
+	// ── Multiplayer lobby UI (only active when NetClient is IN_ROOM) ──────────
+	private boolean mpMode = false;
+	private boolean mpReady = false;
+	private RenderedTextBlock mpPlayersTxt;   // live player list
+	private RenderedTextBlock mpChatTxt;      // last few chat lines
+	private RenderedTextBlock mpStatusTxt;    // countdown / status
+	private RedButton         mpChatBtn;      // opens chat-send dialog
+	private RedButton         mpLeaveBtn;     // leave room
+	private final StringBuilder mpChatHistory = new StringBuilder();
+
+	private final NetClient.Listener mpListener = new NetClient.Listener() {
+		@Override public void onStateChanged(NetClient.State s) {
+			if (s == NetClient.State.DISCONNECTED) {
+				// Server closed – go back to title
+				Game.switchScene(com.shatteredpixel.shatteredpixeldungeon.scenes.TitleScene.class);
+			}
+		}
+		@Override public void onRoomInfo(String code, java.util.List<NetPlayer> players) { refreshMpUi(); }
+		@Override public void onPlayerJoin(NetPlayer p)  { refreshMpUi(); }
+		@Override public void onPlayerLeave(int id)       { refreshMpUi(); }
+		@Override public void onReadyChanged(int id, boolean ready, String heroClass) { refreshMpUi(); }
+		@Override public void onCountdown(int seconds) {
+			if (mpStatusTxt == null) return;
+			if (seconds > 0) {
+				// Host generates a NEW random seed on first tick (seconds==5) and broadcasts on every tick
+				if (NetClient.INSTANCE.isHost()) {
+					if (seconds == 5 || Dungeon.seed == 0) {
+						Dungeon.daily = Dungeon.dailyReplay = false;
+						Dungeon.customSeedText = "";
+						Dungeon.seed = DungeonSeed.randomSeed();
+					}
+					NetClient.INSTANCE.sendSeed(Dungeon.seed);
+				}
+				mpStatusTxt.text("Indul " + seconds + " mp múlva...");
+				mpStatusTxt.setPos(mpStatusTxt.left(), mpStatusTxt.top());
+			} else if (seconds == 0) {
+				NetClient.INSTANCE.removeListener(mpListener);
+				InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+				Game.switchScene(InterlevelScene.class);
+			} else {
+				mpStatusTxt.text("Várakozás a többiekre...");
+				mpStatusTxt.setPos(mpStatusTxt.left(), mpStatusTxt.top());
+			}
+		}
+		@Override public void onGame(com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetMessage data) {
+			// Receive the host-broadcasted seed so all clients generate the same map
+			if ("seed".equals(data.str(NetProtocol.F_CMD))) {
+				long hostSeed = data.longNum(NetProtocol.F_SEED);
+				if (hostSeed != 0 && !NetClient.INSTANCE.isHost()) {
+					Dungeon.daily = Dungeon.dailyReplay = false;
+					Dungeon.customSeedText = "";
+					Dungeon.seed = hostSeed;
+				}
+			}
+		}
+		@Override public void onChat(int id, String name, String text) {
+			if (mpChatTxt == null) return;
+			mpChatHistory.append(name).append(": ").append(text).append("\n");
+			String[] lines = mpChatHistory.toString().split("\n");
+			int start = Math.max(0, lines.length - 3);
+			StringBuilder sb = new StringBuilder();
+			for (int i = start; i < lines.length; i++) sb.append(lines[i]).append("\n");
+			mpChatTxt.text(sb.toString());
+			mpChatTxt.setPos(mpChatTxt.left(), mpChatTxt.top());
+		}
+		@Override public void onError(String msg) {
+			if (mpStatusTxt == null) return;
+			mpStatusTxt.text("Hiba: " + (msg != null ? msg : "?"));
+			mpStatusTxt.setPos(mpStatusTxt.left(), mpStatusTxt.top());
+		}
+	};
 
 	@Override
 	public void create() {
@@ -154,13 +230,20 @@ public class HeroSelectScene extends PixelScene {
 
 				if (GamesInProgress.selectedClass == null) return;
 
-				Dungeon.hero = null;
-				Dungeon.daily = Dungeon.dailyReplay = false;
-				Dungeon.initSeed();
-				ActionIndicator.clearAction();
-				InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
-
-				Game.switchScene( InterlevelScene.class );
+				if (mpMode) {
+					// Toggle ready state
+					mpReady = !mpReady;
+					text(mpReady ? "UNREADY" : "READY");
+					NetClient.INSTANCE.sendReady(mpReady,
+							GamesInProgress.selectedClass.name().toLowerCase());
+				} else {
+					Dungeon.hero = null;
+					Dungeon.daily = Dungeon.dailyReplay = false;
+					Dungeon.initSeed();
+					ActionIndicator.clearAction();
+					InterlevelScene.mode = InterlevelScene.Mode.DESCEND;
+					Game.switchScene( InterlevelScene.class );
+				}
 			}
 		};
 		startBtn.icon(Icons.get(Icons.ENTER));
@@ -399,6 +482,78 @@ public class HeroSelectScene extends PixelScene {
 
 		fadeIn();
 
+		// ── Multiplayer mode setup ────────────────────────────────────────────
+		mpMode = NetClient.INSTANCE.getState() == NetClient.State.IN_ROOM;
+		if (mpMode) {
+			NetClient.INSTANCE.addListener(mpListener);
+
+			// Hide single-player-only controls
+			btnOptions.visible = btnOptions.active = false;
+
+			// Title shows room code
+			title.text("Szoba: " + NetClient.INSTANCE.getRoomCode());
+
+			if (landscape()) {
+				// Use the left-panel space (below hero buttons) for the lobby UI
+				float leftArea   = Math.max(100, w/3f);
+				float panelLeft  = insets.left + 2;
+				float panelWidth = leftArea - 4;
+
+				// Status line (countdown / waiting)
+				mpStatusTxt = PixelScene.renderTextBlock("Válassz hőst, majd kattints READY", 6);
+				mpStatusTxt.hardlight(0xFFFF44);
+				mpStatusTxt.maxWidth((int) panelWidth);
+				add(mpStatusTxt);
+
+				// Player list (will be filled by refreshMpUi)
+				mpPlayersTxt = PixelScene.renderTextBlock("", 6);
+				mpPlayersTxt.maxWidth((int) panelWidth);
+				add(mpPlayersTxt);
+
+				// Chat log
+				mpChatTxt = PixelScene.renderTextBlock("", 6);
+				mpChatTxt.maxWidth((int) panelWidth);
+				add(mpChatTxt);
+
+				// Chat send button
+				mpChatBtn = new RedButton("Chat") {
+					@Override protected void onClick() {
+						ShatteredPixelDungeon.scene().addToFront(new WndTextInput(
+								"", "Üzenet küldése:", "", 120, false, "Küld", "Mégse") {
+							@Override public void onSelect(boolean positive, String text) {
+								if (positive && text != null && !text.trim().isEmpty())
+									NetClient.INSTANCE.sendChat(text.trim());
+							}
+						});
+					}
+				};
+				add(mpChatBtn);
+
+				// Leave room button
+				mpLeaveBtn = new RedButton("Kilép") {
+					@Override protected void onClick() {
+						NetClient.INSTANCE.leaveRoom();
+						NetClient.INSTANCE.removeListener(mpListener);
+						Game.switchScene(TitleScene.class);
+					}
+				};
+				add(mpLeaveBtn);
+
+				// Position the mp panel elements below the hero description area.
+				// Exact y depends on where startBtn is, so we use the bottom quarter.
+				float panelY = startBtn.bottom() + 4;
+				mpStatusTxt.setPos(panelLeft, panelY);
+				panelY = mpStatusTxt.bottom() + 2;
+				mpPlayersTxt.setPos(panelLeft, panelY);
+				panelY = mpPlayersTxt.bottom() + 2;
+				mpChatTxt.setPos(panelLeft, panelY);
+				panelY = mpChatTxt.bottom() + 2;
+				mpChatBtn.setRect(panelLeft, panelY, (panelWidth - 2) / 2f, 14);
+				mpLeaveBtn.setRect(mpChatBtn.right() + 2, panelY, (panelWidth - 2) / 2f, 14);
+			}
+
+			refreshMpUi();
+		}
 	}
 
 	private void updateOptionsColor(){
@@ -476,7 +631,45 @@ public class HeroSelectScene extends PixelScene {
 			align(optionsPane);
 		}
 
+		if (mpMode) {
+			// In MP mode the start button is the READY toggle.
+			// Reset ready state if the player changes their hero.
+			if (mpReady) {
+				mpReady = false;
+				NetClient.INSTANCE.sendReady(false, cl.name().toLowerCase());
+			}
+			startBtn.text("READY");
+			startBtn.setSize(startBtn.reqWidth() + 8, 21);
+			btnOptions.visible = btnOptions.active = false;
+		}
+
 		updateOptionsColor();
+
+		// Refresh player list after hero select so others can see our choice
+		if (mpMode) refreshMpUi();
+	}
+
+	/** Rebuilds the multiplayer player list text block. Safe to call from any thread
+	 *  (NetClient callbacks run on the render thread via Game.runOnRenderThread). */
+	private void refreshMpUi() {
+		if (mpPlayersTxt == null) return;
+		StringBuilder sb = new StringBuilder();
+		for (NetPlayer p : NetClient.INSTANCE.getPlayers()) {
+			sb.append(p.ready ? "\u2714 " : "\u25cb ")
+			  .append(p.name)
+			  .append(p.id == NetClient.INSTANCE.getPlayerId() ? " (te)" : "")
+			  .append("\n");
+		}
+		mpPlayersTxt.text(sb.toString());
+		mpPlayersTxt.setPos(mpPlayersTxt.left(), mpPlayersTxt.top());
+	}
+
+	@Override
+	public void destroy() {
+		super.destroy();
+		if (mpMode) {
+			NetClient.INSTANCE.removeListener(mpListener);
+		}
 	}
 
 	private float uiAlpha;

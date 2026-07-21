@@ -25,8 +25,11 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 public class Room {
 
+	public static final int MAX_PLAYERS = 8;
+
 	private final String code;
 	private final List<ClientHandler> members = new CopyOnWriteArrayList<>();
+	private Thread countdownThread;
 
 	public Room(String code) {
 		this.code = code;
@@ -44,12 +47,88 @@ public class Room {
 		return members.isEmpty();
 	}
 
-	public void add(ClientHandler c) {
-		members.add(c);
+	public boolean isFull() {
+		return members.size() >= MAX_PLAYERS;
 	}
 
-	public void remove(ClientHandler c) {
+	public synchronized ClientHandler getHost() {
+		return members.isEmpty() ? null : members.get(0);
+	}
+
+	public synchronized int getHostId() {
+		ClientHandler h = getHost();
+		return h != null ? h.getPlayerId() : -1;
+	}
+
+	public synchronized void add(ClientHandler c) {
+		if (members.size() < MAX_PLAYERS) {
+			members.add(c);
+		}
+	}
+
+	public synchronized void remove(ClientHandler c) {
+		boolean wasHost = (!members.isEmpty() && members.get(0) == c);
 		members.remove(c);
+		cancelCountdown();
+
+		if (wasHost && !members.isEmpty()) {
+			ClientHandler newHost = members.get(0);
+			NetMessage promote = NetMessage.create(NetProtocol.S_HOST_PROMOTE)
+					.put(NetProtocol.F_HOST_ID, newHost.getPlayerId());
+			broadcast(promote.toJSON());
+		}
+	}
+
+	public synchronized void updatePlayerReady(ClientHandler player, boolean ready, String heroClass) {
+		broadcast(NetMessage.create(NetProtocol.S_READY)
+				.put(NetProtocol.F_ID, player.getPlayerId())
+				.put(NetProtocol.F_READY, ready)
+				.put(NetProtocol.F_HERO, heroClass).toJSON());
+		checkCountdown();
+	}
+
+	private synchronized void checkCountdown() {
+		boolean allReady = !members.isEmpty();
+		for (ClientHandler c : members) {
+			if (!c.asPlayer().ready) {
+				allReady = false;
+				break;
+			}
+		}
+
+		if (allReady && countdownThread == null) {
+			startCountdown();
+		} else if (!allReady && countdownThread != null) {
+			cancelCountdown();
+		}
+	}
+
+	private synchronized void startCountdown() {
+		cancelCountdown();
+		countdownThread = new Thread(() -> {
+			try {
+				for (int i = 5; i >= 0; i--) {
+					broadcast(NetMessage.create(NetProtocol.S_COUNTDOWN)
+							.put(NetProtocol.F_SECS, i).toJSON());
+					if (i > 0) Thread.sleep(1000);
+				}
+			} catch (InterruptedException ignored) {
+				broadcast(NetMessage.create(NetProtocol.S_COUNTDOWN)
+						.put(NetProtocol.F_SECS, -1).toJSON());
+			} finally {
+				synchronized (Room.this) {
+					countdownThread = null;
+				}
+			}
+		}, "room-countdown-" + code);
+		countdownThread.start();
+	}
+
+	private synchronized void cancelCountdown() {
+		if (countdownThread != null) {
+			countdownThread.interrupt();
+			countdownThread = null;
+		}
 	}
 
 	// Relay a raw JSON line to every member except the sender.
@@ -72,6 +151,7 @@ public class Room {
 	public NetMessage roomInfoMessage() {
 		NetMessage m = NetMessage.create(NetProtocol.S_ROOMINFO);
 		m.put(NetProtocol.F_CODE, code);
+		m.put(NetProtocol.F_HOST_ID, getHostId());
 		List<NetMessage> ps = new ArrayList<>();
 		for (NetPlayer p : snapshot()) ps.add(p.toMessage());
 		m.put(NetProtocol.F_PLAYERS, ps);

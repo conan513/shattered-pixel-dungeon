@@ -52,6 +52,15 @@ public class NetMessage extends LinkedHashMap<String, Object> {
 		return 0;
 	}
 
+	public long longNum(String key) {
+		Object v = get(key);
+		if (v instanceof Number) return ((Number) v).longValue();
+		if (v instanceof String) {
+			try { return Long.parseLong((String) v); } catch (Exception e) { return 0L; }
+		}
+		return 0L;
+	}
+
 	public boolean bool(String key) {
 		Object v = get(key);
 		return v instanceof Boolean && (Boolean) v;

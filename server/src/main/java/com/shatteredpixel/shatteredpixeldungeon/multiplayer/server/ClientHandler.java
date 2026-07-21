@@ -33,6 +33,8 @@ public class ClientHandler implements Runnable {
 
 	private int playerId = -1;
 	private String name = "Hero";
+	private boolean ready = false;
+	private String heroClass = "warrior";
 	private Room room;
 
 	private volatile boolean running = true;
@@ -57,7 +59,10 @@ public class ClientHandler implements Runnable {
 	}
 
 	public NetPlayer asPlayer() {
-		return new NetPlayer(playerId, name);
+		NetPlayer p = new NetPlayer(playerId, name);
+		p.ready = ready;
+		p.heroClass = heroClass;
+		return p;
 	}
 
 	public void sendRaw(String json) {
@@ -117,6 +122,8 @@ public class ClientHandler implements Runnable {
 				Room joined = server.joinRoom(this, code);
 				if (joined == null) {
 					sendError("Room not found: " + code);
+				} else if (joined.isFull()) {
+					sendError("Room is full (max " + Room.MAX_PLAYERS + " players)");
 				} else {
 					room = joined;
 					room.sendPlayerListUpdate();
@@ -132,6 +139,19 @@ public class ClientHandler implements Runnable {
 				room.broadcast(chat.toJSON(), null);
 				break;
 
+			case NetProtocol.C_READY:
+				if (room == null) break;
+				ready = m.bool(NetProtocol.F_READY);
+				if (m.str(NetProtocol.F_HERO) != null) heroClass = m.str(NetProtocol.F_HERO);
+				room.updatePlayerReady(this, ready, heroClass);
+				break;
+
+			case NetProtocol.C_HERO:
+				if (room == null) break;
+				heroClass = m.str(NetProtocol.F_HERO);
+				room.updatePlayerReady(this, ready, heroClass);
+				break;
+
 			case NetProtocol.C_INPUT:
 				if (room == null) break;
 				NetMessage relay = NetMessage.create(NetProtocol.S_GAME)
@@ -140,7 +160,28 @@ public class ClientHandler implements Runnable {
 						.put(NetProtocol.F_DX, m.num(NetProtocol.F_DX))
 						.put(NetProtocol.F_DY, m.num(NetProtocol.F_DY))
 						.put(NetProtocol.F_CMD, m.str(NetProtocol.F_CMD));
+				if (m.containsKey(NetProtocol.F_SEED)) relay.put(NetProtocol.F_SEED, m.get(NetProtocol.F_SEED));
+				if (m.containsKey(NetProtocol.F_POS))  relay.put(NetProtocol.F_POS,  m.get(NetProtocol.F_POS));
 				room.broadcast(relay.toJSON(), this);
+				break;
+
+			case NetProtocol.C_SNAPSHOT:
+				if (room == null) break;
+				// Relay snapshot payload to all other clients in the room
+				NetMessage snapMsg = NetMessage.create(NetProtocol.S_SNAPSHOT)
+						.put(NetProtocol.F_HOST_ID, playerId)
+						.put(NetProtocol.F_DATA, m.get(NetProtocol.F_DATA));
+				room.broadcast(snapMsg.toJSON(), this);
+				break;
+
+			case NetProtocol.C_ACTION:
+				if (room == null) break;
+				NetMessage actMsg = NetMessage.create(NetProtocol.C_ACTION)
+						.put(NetProtocol.F_ID, playerId)
+						.put(NetProtocol.F_ACTION, m.str(NetProtocol.F_ACTION))
+						.put(NetProtocol.F_DX, m.num(NetProtocol.F_DX))
+						.put(NetProtocol.F_DY, m.num(NetProtocol.F_DY));
+				room.broadcast(actMsg.toJSON(), this);
 				break;
 
 			case NetProtocol.C_LEAVE:

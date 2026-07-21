@@ -38,7 +38,14 @@ import com.shatteredpixel.shatteredpixeldungeon.actors.blobs.Blob;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.AscensionChallenge;
 import com.shatteredpixel.shatteredpixeldungeon.actors.buffs.ChampionEnemy;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Hero;
+import com.shatteredpixel.shatteredpixeldungeon.actors.hero.HeroClass;
 import com.shatteredpixel.shatteredpixeldungeon.actors.hero.Talent;
+import com.shatteredpixel.shatteredpixeldungeon.multiplayer.MpTurnManager;
+import com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient;
+import com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetMessage;
+import com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetPlayer;
+import com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetProtocol;
+import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.DemonSpawner;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Ghoul;
 import com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mimic;
@@ -123,6 +130,7 @@ import com.shatteredpixel.shatteredpixeldungeon.windows.WndMessage;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndOptions;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndResurrect;
 import com.shatteredpixel.shatteredpixeldungeon.windows.WndUpgrade;
+import com.shatteredpixel.shatteredpixeldungeon.utils.GLog;
 import com.watabou.gltextures.TextureCache;
 import com.watabou.glwrap.Blending;
 import com.watabou.input.ControllerHandler;
@@ -207,6 +215,191 @@ public class GameScene extends PixelScene {
 	private LootIndicator loot;
 	private ActionIndicator action;
 	private ResumeIndicator resume;
+
+	// ─── Multiplayer co-op state and remote player sprites ─────────────────────
+	// GhostHeroSprite is used so we do NOT link to Dungeon.hero (which would cause both to move together)
+	private final java.util.Map<Integer, com.shatteredpixel.shatteredpixeldungeon.sprites.GhostHeroSprite> remoteHeroSprites = new java.util.HashMap<>();
+	private final java.util.Map<Integer, Integer> remoteHeroPositions = new java.util.HashMap<>();
+	private int lastBroadcastHeroPos = -1;
+	private float mpSyncTimer = 0f;
+
+	private NetPlayer findNetPlayer(int id) {
+		for (NetPlayer p : NetClient.INSTANCE.getPlayers()) {
+			if (p.id == id) return p;
+		}
+		return null;
+	}
+
+	private Mob findMobById(int id) {
+		if (Dungeon.level == null) return null;
+		for (Mob m : Dungeon.level.mobs) {
+			if (m.id() == id) return m;
+		}
+		return null;
+	}
+
+	private final NetClient.Listener gameMpListener = new NetClient.Listener() {
+		@Override
+		public void onGame(NetMessage data) {
+			int pid = data.num(NetProtocol.F_ID);
+			if (pid == NetClient.INSTANCE.getPlayerId()) return;
+
+			String cmd = data.str(NetProtocol.F_CMD);
+			com.shatteredpixel.shatteredpixeldungeon.sprites.GhostHeroSprite sprite = remoteHeroSprites.get(pid);
+
+			if ("pos".equals(cmd)) {
+				// Absolute position sync (initial spawn, heartbeat, or move)
+				int pos = data.num(NetProtocol.F_POS);
+				remoteHeroPositions.put(pid, pos);
+
+				if (sprite == null) {
+					NetPlayer p = findNetPlayer(pid);
+					if (p != null) {
+						addRemotePlayerSprite(p);
+						sprite = remoteHeroSprites.get(pid);
+					}
+				}
+
+				if (sprite != null && Dungeon.level != null && pos >= 0 && pos < Dungeon.level.length()) {
+					sprite.placeAt(pos);
+				}
+				return;
+			}
+
+			if (sprite != null && Dungeon.level != null) {
+				int dx = data.num(NetProtocol.F_DX);
+				int dy = data.num(NetProtocol.F_DY);
+				int oldPos = remoteHeroPositions.getOrDefault(pid, Dungeon.level.entrance);
+				int newPos = oldPos + dx + dy * Dungeon.level.width();
+				if (newPos >= 0 && newPos < Dungeon.level.length()) {
+					sprite.move(oldPos, newPos);
+					remoteHeroPositions.put(pid, newPos);
+				}
+			}
+		}
+
+		@Override
+		public void onSnapshot(NetMessage data) {
+			// Clients process host-authoritative mob state snapshot
+			if (NetClient.INSTANCE.isHost() || Dungeon.level == null) return;
+
+			String payload = data.str(NetProtocol.F_DATA);
+			if (payload == null || payload.isEmpty()) return;
+
+			String[] mobEntries = payload.split(";");
+			java.util.Set<Integer> currentMobIds = new java.util.HashSet<>();
+
+			for (String entry : mobEntries) {
+				String[] parts = entry.split(",");
+				if (parts.length >= 4) {
+					try {
+						int mobId = Integer.parseInt(parts[0]);
+						int pos   = Integer.parseInt(parts[1]);
+						int hp    = Integer.parseInt(parts[2]);
+						int maxHp = Integer.parseInt(parts[3]);
+
+						currentMobIds.add(mobId);
+
+						Mob localMob = findMobById(mobId);
+						if (localMob != null) {
+							if (localMob.pos != pos) {
+								int oldPos = localMob.pos;
+								localMob.pos = pos;
+								if (localMob.sprite != null) localMob.sprite.move(oldPos, pos);
+							}
+							localMob.HP = hp;
+							localMob.HT = maxHp;
+						}
+					} catch (Exception ignored) {}
+				}
+			}
+
+			// Remove mobs locally if they died on the host
+			java.util.List<Mob> toRemove = new java.util.ArrayList<>();
+			for (Mob mob : Dungeon.level.mobs) {
+				if (!currentMobIds.contains(mob.id())) {
+					toRemove.add(mob);
+				}
+			}
+			for (Mob mob : toRemove) {
+				mob.destroy();
+				Dungeon.level.mobs.remove(mob);
+				if (mob.sprite != null) mob.sprite.killAndErase();
+			}
+		}
+
+		@Override
+		public void onPlayerJoin(NetPlayer player) {
+			addRemotePlayerSprite(player);
+			if (Dungeon.hero != null) {
+				NetClient.INSTANCE.sendPosition(Dungeon.hero.pos);
+			}
+		}
+
+		@Override
+		public void onPlayerLeave(int playerId) {
+			com.shatteredpixel.shatteredpixeldungeon.sprites.GhostHeroSprite sprite = remoteHeroSprites.remove(playerId);
+			if (sprite != null) {
+				mobs.remove(sprite);
+				sprite.destroy();
+			}
+			remoteHeroPositions.remove(playerId);
+		}
+
+		@Override
+		public void onHostPromote(int newHostId) {
+			GLog.i("Host role updated to player " + newHostId);
+		}
+	};
+
+	private void setupMultiplayerRemotePlayers() {
+		if (NetClient.INSTANCE.getState() != NetClient.State.IN_ROOM) return;
+
+		NetClient.INSTANCE.addListener(gameMpListener);
+
+		for (NetPlayer p : NetClient.INSTANCE.getPlayers()) {
+			if (p.id != NetClient.INSTANCE.getPlayerId()) {
+				addRemotePlayerSprite(p);
+			}
+		}
+
+		// Broadcast our own starting position to all other players
+		if (Dungeon.hero != null) {
+			lastBroadcastHeroPos = Dungeon.hero.pos;
+			NetClient.INSTANCE.sendPosition(Dungeon.hero.pos);
+		}
+	}
+
+	private void addRemotePlayerSprite(NetPlayer p) {
+		if (remoteHeroSprites.containsKey(p.id) || Dungeon.level == null) return;
+
+		HeroClass hc = HeroClass.WARRIOR;
+		try {
+			if (p.heroClass != null) hc = HeroClass.valueOf(p.heroClass.toUpperCase());
+		} catch (Exception ignored) {}
+
+		// Use GhostHeroSprite instead of HeroSprite to avoid auto-linking to Dungeon.hero
+		com.shatteredpixel.shatteredpixeldungeon.sprites.GhostHeroSprite remoteSprite =
+				new com.shatteredpixel.shatteredpixeldungeon.sprites.GhostHeroSprite(hc);
+		int startPos = remoteHeroPositions.getOrDefault(p.id, Dungeon.level.entrance);
+		remoteSprite.placeAt(startPos);
+		remoteHeroPositions.put(p.id, startPos);
+		remoteHeroSprites.put(p.id, remoteSprite);
+		mobs.add(remoteSprite);
+	}
+
+	private void broadcastMobState() {
+		if (!NetClient.INSTANCE.isHost() || Dungeon.level == null) return;
+
+		StringBuilder sb = new StringBuilder();
+		boolean first = true;
+		for (Mob mob : Dungeon.level.mobs) {
+			if (!first) sb.append(";");
+			first = false;
+			sb.append(mob.id()).append(",").append(mob.pos).append(",").append(mob.HP).append(",").append(mob.HT);
+		}
+		NetClient.INSTANCE.sendSnapshot(sb.toString());
+	}
 
 	{
 		inGameScene = true;
@@ -316,6 +509,8 @@ public class GameScene extends PixelScene {
 		for (Mob mob : Dungeon.level.mobs) {
 			addMobSprite( mob );
 		}
+
+		setupMultiplayerRemotePlayers();
 		
 		raisedTerrain = new RaisedTerrainTilemap();
 		add( raisedTerrain );
@@ -781,6 +976,9 @@ public class GameScene extends PixelScene {
 		Journal.saveGlobal();
 		
 		super.destroy();
+		if (NetClient.INSTANCE.getState() == NetClient.State.IN_ROOM) {
+			NetClient.INSTANCE.removeListener(gameMpListener);
+		}
 	}
 	
 	public static void endActorThread(){
@@ -853,6 +1051,37 @@ public class GameScene extends PixelScene {
 		}
 
 		super.update();
+
+		if (NetClient.INSTANCE.getState() == NetClient.State.IN_ROOM && Dungeon.hero != null && Dungeon.level != null) {
+			// Periodic heartbeat & position sync (every 0.5 seconds)
+			mpSyncTimer += Game.elapsed;
+			if (mpSyncTimer >= 0.5f) {
+				mpSyncTimer = 0f;
+				NetClient.INSTANCE.sendPosition(Dungeon.hero.pos);
+				if (NetClient.INSTANCE.isHost()) {
+					broadcastMobState();
+				}
+			}
+
+			// Broadcast position changes of local hero to remote players immediately
+			if (Dungeon.hero.pos != lastBroadcastHeroPos) {
+				if (lastBroadcastHeroPos != -1) {
+					int dx = (Dungeon.hero.pos % Dungeon.level.width()) - (lastBroadcastHeroPos % Dungeon.level.width());
+					int dy = (Dungeon.hero.pos / Dungeon.level.width()) - (lastBroadcastHeroPos / Dungeon.level.width());
+					NetClient.INSTANCE.sendInput(dx, dy, "move");
+				}
+				lastBroadcastHeroPos = Dungeon.hero.pos;
+			}
+
+			// Check battle phase status
+			boolean mobVisible = MpTurnManager.INSTANCE.checkMonstersVisible();
+			if (mobVisible != MpTurnManager.INSTANCE.isBattlePhase()) {
+				MpTurnManager.INSTANCE.setBattlePhase(mobVisible);
+				if (NetClient.INSTANCE.isHost()) {
+					NetClient.INSTANCE.sendTurnChange(MpTurnManager.INSTANCE.getActivePlayerId(), mobVisible);
+				}
+			}
+		}
 
 		if (notifyDelay > 0) notifyDelay -= Game.elapsed;
 
@@ -1862,4 +2091,10 @@ public class GameScene extends PixelScene {
 			return null;
 		}
 	};
+
+	@Override
+	public void destroy() {
+		NetClient.INSTANCE.removeListener(gameMpListener);
+		super.destroy();
+	}
 }

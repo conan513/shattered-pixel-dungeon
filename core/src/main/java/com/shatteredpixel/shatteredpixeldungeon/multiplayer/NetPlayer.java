@@ -18,6 +18,7 @@ public class NetPlayer {
 	public int id;
 	public String name;
 	public boolean ready;
+	public String heroClass = "warrior";
 	public int depth;
 	public int hp;
 	public int maxHp;
@@ -33,7 +34,9 @@ public class NetPlayer {
 		NetPlayer p = new NetPlayer();
 		p.id = m.num(NetProtocol.F_ID);
 		p.name = m.str(NetProtocol.F_NAME);
-		p.ready = m.bool("ready");
+		p.ready = m.bool(NetProtocol.F_READY);
+		String hero = m.str(NetProtocol.F_HERO);
+		p.heroClass = hero != null ? hero : "warrior";
 		p.depth = m.num("depth");
 		p.hp = m.num("hp");
 		p.maxHp = m.num("maxHp");
@@ -44,7 +47,8 @@ public class NetPlayer {
 		return NetMessage.create("player")
 				.put(NetProtocol.F_ID, id)
 				.put(NetProtocol.F_NAME, name == null ? "" : name)
-				.put("ready", ready)
+				.put(NetProtocol.F_READY, ready)
+				.put(NetProtocol.F_HERO, heroClass == null ? "warrior" : heroClass)
 				.put("depth", depth)
 				.put("hp", hp)
 				.put("maxHp", maxHp);
