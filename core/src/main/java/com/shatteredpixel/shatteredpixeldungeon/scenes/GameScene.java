@@ -240,7 +240,23 @@ public class GameScene extends PixelScene {
 
 	private final NetClient.Listener gameMpListener = new NetClient.Listener() {
 		@Override
+		public void onStateChanged(NetClient.State newState) {
+			GLog.i("MP onStateChanged: " + newState + " playerId=" + NetClient.INSTANCE.getPlayerId() + " hostId=" + NetClient.INSTANCE.getHostId());
+			if (newState == NetClient.State.IN_ROOM) {
+				setupMultiplayerRemotePlayers();
+			}
+		}
+
+		@Override
 		public void onGame(NetMessage data) {
+			// Debug: log incoming multiplayer game messages to help diagnose visibility issues
+			try {
+				int dbgPid = data.num(NetProtocol.F_ID);
+				String dbgCmd = data.str(NetProtocol.F_CMD);
+				GLog.i("MP onGame recv: pid=" + dbgPid + " cmd=" + dbgCmd
+					+ " dx=" + data.num(NetProtocol.F_DX) + " dy=" + data.num(NetProtocol.F_DY)
+					+ " pos=" + data.num(NetProtocol.F_POS));
+			} catch (Exception ignored) {}
 			int pid = data.num(NetProtocol.F_ID);
 			if (pid == NetClient.INSTANCE.getPlayerId()) return;
 
@@ -254,10 +270,16 @@ public class GameScene extends PixelScene {
 
 				if (sprite == null) {
 					NetPlayer p = findNetPlayer(pid);
-					if (p != null) {
-						addRemotePlayerSprite(p);
-						sprite = remoteHeroSprites.get(pid);
-					}
+					GLog.i("MP onGame pos: sprite==null for pid=" + pid + " foundPlayer=" + (p != null));
+				if (p == null) {
+					p = new NetPlayer(pid, "remote" + pid);
+					p.heroClass = "warrior";
+					GLog.i("MP onGame pos: created placeholder NetPlayer for pid=" + pid);
+				}
+				addRemotePlayerSprite(p);
+				sprite = remoteHeroSprites.get(pid);
+				GLog.i("MP onGame pos: after addRemotePlayerSprite pid=" + pid + " sprite=" + (sprite != null));
+					GLog.i("MP onGame pos: still no sprite for pid=" + pid + " existingKeys=" + remoteHeroSprites.keySet());
 				}
 
 				if (sprite != null && Dungeon.level != null && pos >= 0 && pos < Dungeon.level.length()) {
@@ -330,6 +352,7 @@ public class GameScene extends PixelScene {
 
 		@Override
 		public void onPlayerJoin(NetPlayer player) {
+			GLog.i("MP onPlayerJoin: pid=" + player.id + " name=" + player.name + " hero=" + player.heroClass);
 			addRemotePlayerSprite(player);
 			if (Dungeon.hero != null) {
 				NetClient.INSTANCE.sendPosition(Dungeon.hero.pos);
@@ -355,6 +378,8 @@ public class GameScene extends PixelScene {
 	private void setupMultiplayerRemotePlayers() {
 		if (NetClient.INSTANCE.getState() != NetClient.State.IN_ROOM) return;
 
+		GLog.i("MP setupMultiplayerRemotePlayers: playerId=" + NetClient.INSTANCE.getPlayerId() + " hostId=" + NetClient.INSTANCE.getHostId() + " players=" + NetClient.INSTANCE.getPlayers().stream().map(p -> p.id + ":" + p.name).collect(java.util.stream.Collectors.joining(",")));
+
 		NetClient.INSTANCE.addListener(gameMpListener);
 
 		for (NetPlayer p : NetClient.INSTANCE.getPlayers()) {
@@ -371,7 +396,10 @@ public class GameScene extends PixelScene {
 	}
 
 	private void addRemotePlayerSprite(NetPlayer p) {
-		if (remoteHeroSprites.containsKey(p.id) || Dungeon.level == null) return;
+		if (remoteHeroSprites.containsKey(p.id) || Dungeon.level == null) {
+			GLog.i("MP addRemotePlayerSprite skipped for pid=" + p.id + " alreadyExists=" + remoteHeroSprites.containsKey(p.id) + " levelNull=" + (Dungeon.level == null));
+			return;
+		}
 
 		HeroClass hc = HeroClass.WARRIOR;
 		try {
@@ -386,6 +414,7 @@ public class GameScene extends PixelScene {
 		remoteHeroPositions.put(p.id, startPos);
 		remoteHeroSprites.put(p.id, remoteSprite);
 		mobs.add(remoteSprite);
+		GLog.i("MP addRemotePlayerSprite pid=" + p.id + " startPos=" + startPos + " sprite=" + remoteSprite);
 	}
 
 	private void broadcastMobState() {
@@ -2092,9 +2121,4 @@ public class GameScene extends PixelScene {
 		}
 	};
 
-	@Override
-	public void destroy() {
-		NetClient.INSTANCE.removeListener(gameMpListener);
-		super.destroy();
-	}
 }
