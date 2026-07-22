@@ -9,9 +9,10 @@
  *   - No active monsters visible. Players can move freely.
  *
  * Battle Phase:
- *   - Triggered when 1+ monsters are visible to any player or active.
- *   - Strict turn sequence: Host -> Client 1 -> Client 2 ... -> Mobs -> Host.
- *   - Each player gets 1 action (move/attack/item/wait).
+ *   - Triggered when 1+ monsters are visible/active.
+ *   - Turn sequence: Host -> Client 1 -> Client 2 -> ... -> Host (cycles).
+ *   - Each player gets 1 action per round (move/attack/item/wait).
+ *   - Mobs act at their natural pace on the host (no strict turn slot).
  */
 
 package com.shatteredpixel.shatteredpixeldungeon.multiplayer;
@@ -85,14 +86,14 @@ public class MpTurnManager {
 
 	/**
 	 * Advance turn to next player in join order.
-	 * Returns true if all players have completed their turn (ready for monsters turn).
+	 * Returns true if all players have completed their round (cycled back to Host).
 	 */
 	public boolean nextTurn() {
 		if (playerOrder.isEmpty()) return true;
 
 		int currentIndex = playerOrder.indexOf(activePlayerId);
 		if (currentIndex == -1 || currentIndex >= playerOrder.size() - 1) {
-			// All players acted — cycle back to first player (Host) after monsters act
+			// All players acted — cycle back to first player (Host)
 			activePlayerId = playerOrder.get(0);
 			return true;
 		} else {

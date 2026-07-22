@@ -146,6 +146,7 @@ import com.shatteredpixel.shatteredpixeldungeon.messages.Messages;
 import com.shatteredpixel.shatteredpixeldungeon.plants.Earthroot;
 import com.shatteredpixel.shatteredpixeldungeon.plants.Swiftthistle;
 import com.shatteredpixel.shatteredpixeldungeon.scenes.GameScene;
+import com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient;
 import com.shatteredpixel.shatteredpixeldungeon.sprites.CharSprite;
 import com.shatteredpixel.shatteredpixeldungeon.sprites.MobSprite;
 import com.shatteredpixel.shatteredpixeldungeon.ui.TargetHealthIndicator;
@@ -950,6 +951,13 @@ public abstract class Char extends Actor {
 		shielded -= dmg;
 		HP -= dmg;
 
+		// Host: broadcast mob/char state after HP change to keep clients in sync
+		try {
+			if (NetClient.INSTANCE != null && NetClient.INSTANCE.isHost()) {
+				GameScene.broadcastMobState();
+			}
+		} catch (Exception ignored) {}
+
 		if (HP > 0 && buff(Grim.GrimTracker.class) != null){
 
 			float finalChance = buff(Grim.GrimTracker.class).maxChance;
@@ -1076,6 +1084,13 @@ public abstract class Char extends Actor {
 				ch.buff(Talent.DeadlyFollowupTracker.class).detach();
 			}
 		}
+
+		// Host: broadcast snapshot after a destroy so clients can remove mob quickly
+		try {
+			if (NetClient.INSTANCE != null && NetClient.INSTANCE.isHost()) {
+				GameScene.broadcastMobState();
+			}
+		} catch (Exception ignored) {}
 	}
 	
 	public void die( Object src ) {

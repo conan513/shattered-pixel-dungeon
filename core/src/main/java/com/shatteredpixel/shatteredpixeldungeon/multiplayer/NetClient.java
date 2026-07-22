@@ -199,6 +199,16 @@ public class NetClient {
 				.put(NetProtocol.F_DY, 0));
 	}
 
+	/** Notify host that a client-side mob motion finished (reconciliation request). */
+	public void sendMobComplete(int mobId, int pos) {
+		send(NetMessage.create(NetProtocol.C_INPUT)
+				.put(NetProtocol.F_CMD, "mob_mc")
+				.put(NetProtocol.F_MOB_ID, mobId)
+				.put(NetProtocol.F_POS, pos)
+				.put(NetProtocol.F_DX, 0)
+				.put(NetProtocol.F_DY, 0));
+	}
+
 	public void leaveRoom() {
 		send(NetMessage.create(NetProtocol.C_LEAVE));
 		roomCode = null;

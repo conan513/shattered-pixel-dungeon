@@ -72,4 +72,5 @@ public class NetProtocol {
 	public static final String F_ACTION   = "action";
 	public static final String F_SEED     = "seed";     // shared dungeon seed from host
 	public static final String F_POS      = "pos";      // absolute cell position (spawn sync)
+	public static final String F_MOB_ID   = "mid";      // mob id for motion-complete
 }

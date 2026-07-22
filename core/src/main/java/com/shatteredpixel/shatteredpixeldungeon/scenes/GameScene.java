@@ -222,6 +222,7 @@ public class GameScene extends PixelScene {
 	private final java.util.Map<Integer, Integer> remoteHeroPositions = new java.util.HashMap<>();
 	private int lastBroadcastHeroPos = -1;
 	private float mpSyncTimer = 0f;
+	private boolean wasHeroReady = true;
 
 	private NetPlayer findNetPlayer(int id) {
 		for (NetPlayer p : NetClient.INSTANCE.getPlayers()) {
@@ -238,12 +239,30 @@ public class GameScene extends PixelScene {
 		return null;
 	}
 
+	private Mob findMobByPosition(int pos) {
+		if (Dungeon.level == null) return null;
+		for (Mob m : Dungeon.level.mobs) {
+			if (m.pos == pos) return m;
+		}
+		return null;
+	}
+
 	private final NetClient.Listener gameMpListener = new NetClient.Listener() {
 		@Override
 		public void onStateChanged(NetClient.State newState) {
 			GLog.i("MP onStateChanged: " + newState + " playerId=" + NetClient.INSTANCE.getPlayerId() + " hostId=" + NetClient.INSTANCE.getHostId());
 			if (newState == NetClient.State.IN_ROOM) {
 				setupMultiplayerRemotePlayers();
+			}
+		}
+
+		@Override
+		public void onTurnChange(int activePlayerId, boolean battlePhase) {
+			GLog.i("MP turn changed activePlayerId=" + activePlayerId + " battlePhase=" + battlePhase);
+			if (actorThread != null && actorThread.isAlive()) {
+				synchronized (actorThread) {
+					actorThread.notify();
+				}
 			}
 		}
 
@@ -298,6 +317,41 @@ public class GameScene extends PixelScene {
 					remoteHeroPositions.put(pid, newPos);
 				}
 			}
+
+			if ("mob_mc".equals(cmd)) {
+				// Client notified host that a client-side mob motion completed.
+				if (NetClient.INSTANCE.isHost()) {
+					int mobId = data.num(NetProtocol.F_MOB_ID);
+					int pos = data.num(NetProtocol.F_POS);
+					// Schedule authoritative update on the actor thread
+					final int fMobId = mobId;
+					final int fPos = pos;
+					Actor.add(new com.shatteredpixel.shatteredpixeldungeon.actors.Actor() {
+						@Override
+						protected boolean act() {
+							com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob m = (com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob) Actor.findById(fMobId);
+							if (m != null && Dungeon.level != null) {
+								int oldPos = m.pos;
+								m.pos = fPos;
+								Dungeon.level.occupyCell(m);
+								if (m.sprite != null) m.sprite.move(oldPos, fPos);
+								GameScene.broadcastMobState();
+							}
+							return false;
+						}
+					});
+				}
+				return;
+			}
+
+			// Host: advance turn when a client completes their action ("move" or "action" signal)
+			if (NetClient.INSTANCE.isHost() && MpTurnManager.INSTANCE.isBattlePhase()
+					&& ("move".equals(cmd) || "action".equals(cmd))) {
+				boolean allPlayersDone = MpTurnManager.INSTANCE.nextTurn();
+				int nextActiveId = MpTurnManager.INSTANCE.getActivePlayerId();
+				// Notify all clients of whose turn it is next
+				NetClient.INSTANCE.sendTurnChange(nextActiveId, true);
+			}
 		}
 
 		@Override
@@ -308,6 +362,7 @@ public class GameScene extends PixelScene {
 			String payload = data.str(NetProtocol.F_DATA);
 			if (payload == null || payload.isEmpty()) return;
 
+			GLog.i("MP onSnapshot: received payload=" + payload);
 			String[] mobEntries = payload.split(";");
 			java.util.Set<Integer> currentMobIds = new java.util.HashSet<>();
 
@@ -325,12 +380,24 @@ public class GameScene extends PixelScene {
 						Mob localMob = findMobById(mobId);
 						if (localMob != null) {
 							if (localMob.pos != pos) {
-								int oldPos = localMob.pos;
-								localMob.pos = pos;
-								if (localMob.sprite != null) localMob.sprite.move(oldPos, pos);
+								// If the local sprite is currently moving, don't yank it back to
+								// the host position immediately — wait until motion completes.
+								if (localMob.sprite != null && localMob.sprite.isMoving) {
+									GLog.i("MP onSnapshot: skipping move for mob id=" + mobId + " (sprite moving) hostPos=" + pos + " localPos=" + localMob.pos);
+								} else {
+									int oldPos = localMob.pos;
+									localMob.pos = pos;
+									if (localMob.sprite != null) {
+										localMob.sprite.move(oldPos, pos);
+									}
+									GLog.i("MP onSnapshot: moved mob id=" + mobId + " from " + oldPos + " to " + pos);
+								}
 							}
+							// Always keep HP/HT authoritative
 							localMob.HP = hp;
 							localMob.HT = maxHp;
+						} else {
+							GLog.i("MP onSnapshot: missing local mob id=" + mobId + " pos=" + pos + " hp=" + hp + " maxHp=" + maxHp);
 						}
 					} catch (Exception ignored) {}
 				}
@@ -356,6 +423,10 @@ public class GameScene extends PixelScene {
 			addRemotePlayerSprite(player);
 			if (Dungeon.hero != null) {
 				NetClient.INSTANCE.sendPosition(Dungeon.hero.pos);
+			}
+			if (NetClient.INSTANCE.isHost()) {
+				GLog.i("MP host broadcasting mob snapshot on player join");
+				broadcastMobState();
 			}
 		}
 
@@ -393,6 +464,11 @@ public class GameScene extends PixelScene {
 			lastBroadcastHeroPos = Dungeon.hero.pos;
 			NetClient.INSTANCE.sendPosition(Dungeon.hero.pos);
 		}
+
+		if (NetClient.INSTANCE.isHost()) {
+			GLog.i("MP host broadcast initial mob snapshot");
+			broadcastMobState();
+		}
 	}
 
 	private void addRemotePlayerSprite(NetPlayer p) {
@@ -417,7 +493,7 @@ public class GameScene extends PixelScene {
 		GLog.i("MP addRemotePlayerSprite pid=" + p.id + " startPos=" + startPos + " sprite=" + remoteSprite);
 	}
 
-	private void broadcastMobState() {
+	public static void broadcastMobState() {
 		if (!NetClient.INSTANCE.isHost() || Dungeon.level == null) return;
 
 		StringBuilder sb = new StringBuilder();
@@ -1098,9 +1174,32 @@ public class GameScene extends PixelScene {
 					int dx = (Dungeon.hero.pos % Dungeon.level.width()) - (lastBroadcastHeroPos % Dungeon.level.width());
 					int dy = (Dungeon.hero.pos / Dungeon.level.width()) - (lastBroadcastHeroPos / Dungeon.level.width());
 					NetClient.INSTANCE.sendInput(dx, dy, "move");
+					// Host: after processing a move, broadcast authoritative mob state to clients
+					if (NetClient.INSTANCE.isHost()) {
+						broadcastMobState();
+					}
 				}
 				lastBroadcastHeroPos = Dungeon.hero.pos;
 			}
+
+			// Action completion detection in multiplayer
+			if (Dungeon.hero.ready && !wasHeroReady) {
+				if (MpTurnManager.INSTANCE.isBattlePhase()) {
+					if (NetClient.INSTANCE.isHost()) {
+						// Host completes their turn: advance turn counter and notify all clients
+						MpTurnManager.INSTANCE.nextTurn();
+						int nextActiveId = MpTurnManager.INSTANCE.getActivePlayerId();
+						NetClient.INSTANCE.sendTurnChange(nextActiveId, true);
+					} else {
+						// Client completes their turn via non-move action: signal host
+						if (Dungeon.hero.pos == lastBroadcastHeroPos) {
+							NetClient.INSTANCE.sendInput(0, 0, "action");
+						}
+					}
+				}
+			}
+			wasHeroReady = Dungeon.hero.ready;
+
 
 			// Check battle phase status
 			boolean mobVisible = MpTurnManager.INSTANCE.checkMonstersVisible();
@@ -1108,6 +1207,8 @@ public class GameScene extends PixelScene {
 				MpTurnManager.INSTANCE.setBattlePhase(mobVisible);
 				if (NetClient.INSTANCE.isHost()) {
 					NetClient.INSTANCE.sendTurnChange(MpTurnManager.INSTANCE.getActivePlayerId(), mobVisible);
+					// After turn-phase change, host sends authoritative world snapshot
+					broadcastMobState();
 				}
 			}
 		}
@@ -1416,6 +1517,10 @@ public class GameScene extends PixelScene {
 			scene.addMobSprite(mob);
 			Actor.addDelayed(mob, delay);
 			mob.spendToWhole();
+			// Host: immediately broadcast new mob state so clients can create sprites
+				if (NetClient.INSTANCE.isHost()) {
+					GameScene.broadcastMobState();
+				}
 		}
 	}
 	

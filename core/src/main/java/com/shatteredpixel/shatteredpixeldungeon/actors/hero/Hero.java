@@ -829,9 +829,10 @@ public class Hero extends Char {
 	
 	@Override
 	public boolean act() {
-		
+
 		//calls to dungeon.observe will also update hero's local FOV.
 		fieldOfView = Dungeon.level.heroFOV;
+
 
 		if (buff(Endure.EndureTracker.class) != null){
 			buff(Endure.EndureTracker.class).endEnduring();
@@ -1454,6 +1455,12 @@ public class Hero extends Char {
 	}
 	
 	public void rest( boolean fullRest ) {
+		if (com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient.INSTANCE.getState() == com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient.State.IN_ROOM) {
+			if (!com.shatteredpixel.shatteredpixeldungeon.multiplayer.MpTurnManager.INSTANCE.isMyTurn(com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient.INSTANCE.getPlayerId())) {
+				GLog.w("Nem te jössz!");
+				return;
+			}
+		}
 		spendAndNextConstant( TIME_TO_REST );
 		if (hasTalent(Talent.HOLD_FAST)){
 			Buff.affect(this, HoldFast.class).pos = pos;
@@ -1875,6 +1882,12 @@ public class Hero extends Char {
 	}
 	
 	public boolean handle( int cell ) {
+		if (com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient.INSTANCE.getState() == com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient.State.IN_ROOM) {
+			if (!com.shatteredpixel.shatteredpixeldungeon.multiplayer.MpTurnManager.INSTANCE.isMyTurn(com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient.INSTANCE.getPlayerId())) {
+				GLog.w("Nem te jössz!");
+				return false;
+			}
+		}
 		
 		if (cell == -1) {
 			return false;

@@ -830,6 +830,16 @@ public class CharSprite extends MovieClip implements Tweener.Listener, MovieClip
 				motion = null;
 				ch.onMotionComplete();
 
+				try {
+					// If we're in multiplayer as a client, notify host that this mob's motion finished
+					if (com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient.INSTANCE != null
+						&& com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient.INSTANCE.getState() == com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient.State.IN_ROOM
+						&& !com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient.INSTANCE.isHost()
+						&& ch instanceof com.shatteredpixel.shatteredpixeldungeon.actors.mobs.Mob) {
+						com.shatteredpixel.shatteredpixeldungeon.multiplayer.NetClient.INSTANCE.sendMobComplete(ch.id(), ch.pos);
+					}
+				} catch (Exception ignored) {}
+
 				GameScene.sortMobSprites();
 				notifyAll();
 			}
